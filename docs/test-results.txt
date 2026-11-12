@@ -1,0 +1,88 @@
+Verification at 2026-11-12T12:21:42.280Z
+Node v24.17.0
+
+$ node node_modules/typescript/bin/tsc --noEmit
+
+Exit: 0
+
+$ node --test tests/*.test.ts
+✔ identity accepts explicit fields, distinguishes app and unit IDs (247.0203ms)
+✔ identity rejects different selected publisher and conflicting fields (65.9232ms)
+✔ currency binds to input context and rejects bare dollar or competing currencies (15.885ms)
+✔ page min max step rules checked using integer arithmetic (9.5855ms)
+✔ mock semantic form activates manual mode, preserves per-row floor and verifies saved config (962.0688ms)
+✔ wrong currency never reaches create, changed name refuses submit (396.5342ms)
+✔ ambiguous controls stop rather than picking first (136.3045ms)
+✔ already-created ID survives incomplete saved floor verification (105.6384ms)
+✔ list completeness requires matching explicit totals and pagination (303.8287ms)
+✔ diagnostics excludes arbitrary page text, values, IDs and query strings (58.9731ms)
+✔ detail navigation never combines ID A with configuration from unit B (73.0662ms)
+✔ search outside immediate table section prevents falsely complete lookup (64.8267ms)
+✔ same names remain separate results, including different formats (118.0337ms)
+✔ home follows observed link only and rechecks target app after navigation (54.2611ms)
+✔ lookup enumerates pages and resets to observed first page for later queries (287.4883ms)
+✔ decimal text is lossless, normalized, and refuses ambiguous amounts (2.7617ms)
+✔ actual input min max and decimal step constraints are enforced without floating point (1.499ms)
+✔ CSV supports BOM, headers, empty records, quoted commas and escaped quotes (2.6356ms)
+✔ TSV and multiline records retain physical source row numbers (0.6768ms)
+✔ invalid cells are row errors, all duplicate names are reported, and names are never truncated (0.9507ms)
+✔ lookup requires completeness and exact saved configuration and real unit ID (0.6926ms)
+✔ state machine requires submission intent and ownership before submitting (5.36ms)
+✔ recovery never resets submitted tasks or erases ownership (1.0134ms)
+✔ batch freezes identity, keeps distinct prices and validates public IDs (0.6163ms)
+✔ CSV includes BOM, quotes all values, prevents spreadsheet formulas and filters safely (1.6174ms)
+✔ batch boundary revalidates hand-built rows instead of trusting their errors arrays (0.9247ms)
+✔ CSV/Excel 清单保留原始行号、逗号名称及每行独立底价 (133.2983ms)
+✔ 预检通过和整批确认缺一不可，修改清单后必须重新预检 (85.8826ms)
+✔ 解析错误、重复名称与空新增行不会被表格序列化吞掉 (42.1286ms)
+✔ 活动与暂停批次冻结配置，结束批次可以预检新清单 (44.348ms)
+✔ 未确认草稿允许停止，并且不会触发开始 (27.9175ms)
+✔ 执行日志显示中文步骤、批次累计耗时与本行间隔，保留原因并隐藏凭证 (39.4214ms)
+✔ 重试仅开放无提交意图的明确失败项，配置待核验项进入核验 (39.0484ms)
+✔ 面板以文本显示结果，折叠、销毁及重复挂载保护有效 (33.4373ms)
+✔ 预检只传递当前配置，不会触发开始或提交操作 (34.8671ms)
+✔ dispatch requires running phase and canary verification before expanding pool (8.3821ms)
+✔ only known pre-submit failures may retry and retry budget is bounded (0.7469ms)
+✔ reports must match all current assignment and worker identifiers (0.3735ms)
+✔ unassigned reports cannot match by undefined assignment identifiers (0.2953ms)
+✔ uncertain and historical submitting states require verification, never a fresh create (0.4423ms)
+✔ pre-submit failure stays failed, but any obtained unit ID remains created-unverified (0.248ms)
+✔ submission intent and unique ownership are durable before the only create click (12.0941ms)
+✔ paused intent receives a denial ACK and does not click create (2.1718ms)
+✔ repeating the same intent report cannot grant twice or mutate the stored intent (2.4764ms)
+✔ loading an unconfirmed draft cannot authorize resume after a refresh (5.7028ms)
+✔ stop converges to done only after no assignment is awaiting collection (1.6543ms)
+✔ a frozen worker times out into uncertainty while retaining ownership, never a reassignment (2.5929ms)
+✔ an intent journal surviving worker refresh reports uncertainty without preparing or submitting (0.7524ms)
+✔ a terminal result remains durable with its real ID if the result ACK transport fails (2.001ms)
+✔ a report with a different unit ID cannot replace a previously obtained real ID (1.0237ms)
+✔ a late frozen-worker error is acknowledged without downgrading an independently verified result (0.8201ms)
+✔ verification transport errors restore an uncertain state with a reason, not a running verification (1.2962ms)
+✔ skipping an existing first row does not unlock concurrent creation before a real canary succeeds (1.3528ms)
+✔ reusing a worker slot preserves the prior terminal ACK while clearing stale grant and denial (1.2188ms)
+✔ a late report for an already verified old task cannot clear the reused slot new assignment (0.9295ms)
+✔ switching publisher during a paused batch cannot release its original controller lock (0.5519ms)
+✔ stopping an unconfirmed draft preserves incomplete preflight evidence while allowing a new batch (0.9214ms)
+✔ a persistent stop request survives controller refresh and refuses resume without creating (0.8998ms)
+✔ retry with no safe failures retains stop request; explicit safe retry clears it and waits paused (0.9567ms)
+✔ stopping an uncertain submitted task retains its assignment and ID and cannot finish the batch (0.5255ms)
+✔ a timed-out pre-submit worker can report a definite failure and be retried safely after recovery (2.1552ms)
+ℹ tests 61
+ℹ suites 0
+ℹ pass 61
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4379.4749
+
+Exit: 0
+
+$ node scripts/build.mjs
+Built dist/admob-batch-creator.user.js (109275 bytes, no runtime dependencies)
+
+Exit: 0
+
+$ node --check dist/admob-batch-creator.user.js
+
+Exit: 0

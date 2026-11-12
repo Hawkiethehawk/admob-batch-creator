@@ -1,0 +1,30 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>AdMob 语义模拟平台（仅本机测试）</title>
+<style>body{font:15px system-ui;margin:24px;max-width:760px}button,input{font:inherit;padding:8px;margin:8px}th,td{border:1px solid #999;padding:6px}table{border-collapse:collapse}fieldset{padding:16px}article{display:inline-block;border:1px solid #888;padding:20px;margin:8px}dt{float:left;width:120px}dd{margin-bottom:8px}</style>
+<h1>语义模拟平台</h1><p>本页面不会访问 Google，不代表真实 AdMob 后台。</p>
+<dl><dt>发布商 ID</dt><dd>pub-1234567890123456</dd><dt>应用 ID</dt><dd>ca-app-pub-1234567890123456~1234567890</dd><dt>应用名称</dt><dd>本机测试应用</dd></dl>
+<nav><a href="/fixture.html" id="home-link">广告单元</a></nav><div id="platform"></div>
+<script>
+(() => {
+ const platform=document.getElementById('platform');let view='list';let format='interstitial';
+ const params=new URLSearchParams(location.search),currency=params.get('currency')||'USD',delay=Number(params.get('saveDelay')||'0');let partial=params.get('partial')==='1';
+ const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ const units=()=>JSON.parse(localStorage.getItem('fixture:units')||'[]');
+ const formatText=f=>f==='interstitial'?'插页式':'开屏';
+ const detail=row=>{view='detail';platform.innerHTML=`<main><h2>已保存的广告单元</h2><dl><dt>广告单元 ID</dt><dd>${row.unitId}</dd><dt>广告单元名称</dt><dd>${escape(row.name)}</dd><dt>广告格式</dt><dd>${formatText(row.format)}</dd><dt>底价模式</dt><dd>手动设定底价</dd><dt>全局底价</dt><dd>${escape(row.floor)}</dd><dt>底价币种</dt><dd>USD</dd></dl></main>`;};
+ const renderList=()=>{view='list';const rows=units();platform.innerHTML=`<main><section><p>${partial?'列表未声明总数':`共 ${rows.length} 个广告单元`}</p><table aria-label="广告单元"><thead><tr><th>广告单元名称</th><th>广告单元 ID</th><th>广告格式</th><th>底价模式</th><th>全局底价</th><th>底价币种</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${escape(r.name)}</td><td>${r.unitId}</td><td>${formatText(r.format)}</td><td>手动设定底价</td><td>${escape(r.floor)}</td><td>USD</td></tr>`).join('')}</tbody></table><button type="button" id="add-unit">添加广告单元</button></section></main>`;document.getElementById('add-unit').onclick=()=>renderFormats();};
+ const renderFormats=()=>{view='formats';platform.innerHTML=`<main><h2>选择广告格式</h2><article aria-label="插页式"><h3>插页式</h3><button type="button" id="interstitial">选择</button></article><article aria-label="开屏"><h3>开屏</h3><button type="button" id="app-open">选择</button></article><article aria-label="激励插页式"><h3>激励插页式</h3><button type="button">选择</button></article></main>`;for(const f of ['interstitial','app-open'])document.getElementById(f).onclick=()=>{format=f;renderForm();};};
+ const renderForm=()=>{view='form';platform.innerHTML=`<main><form><dl><dt>广告格式</dt><dd>${formatText(format)}</dd></dl><label for="unit-name">广告单元名称</label><input id="unit-name" maxlength="80" required><button type="button" id="advanced" aria-expanded="false">高级设置</button><div id="advanced-fields" hidden><fieldset aria-label="有效每千次展示费用底价"><legend>有效每千次展示费用底价</legend><label><input type="radio" name="mode" value="auto" checked>由 Google 优化</label><label><input type="radio" name="mode" value="manual">手动设定底价</label><br><label for="unit-floor">全局底价</label><span id="floor-currency">${escape(currency)}</span><input id="unit-floor" type="number" min="0.01" max="1000000" step="0.01" aria-describedby="floor-currency" required></fieldset></div><button type="button" id="create-unit">创建广告单元</button></form></main>`;
+ document.getElementById('advanced').onclick=e=>{e.currentTarget.setAttribute('aria-expanded','true');document.getElementById('advanced-fields').hidden=false;};
+ document.getElementById('create-unit').onclick=()=>{
+  const name=document.getElementById('unit-name').value,floor=document.getElementById('unit-floor').value,manual=document.querySelector('[value="manual"]').checked;
+  const clicks=JSON.parse(localStorage.getItem('fixture:clicks')||'[]');clicks.push({name,floor,manual,format,currency,at:Date.now(),tab:sessionStorage.getItem('mock:tab')});localStorage.setItem('fixture:clicks',JSON.stringify(clicks));
+  if(!manual||currency!=='USD'||!name||!document.querySelector('form').checkValidity())throw new Error('模拟服务拒绝无效创建');
+  document.getElementById('create-unit').disabled=true;
+  setTimeout(()=>{const all=units();const row={name,floor,format,unitId:'ca-app-pub-1234567890123456/'+String(all.length+1).padStart(10,'0')};all.push(row);localStorage.setItem('fixture:units',JSON.stringify(all));detail(row);},delay);
+ };
+ };
+ document.getElementById('home-link').onclick=e=>{e.preventDefault();renderList();};
+ addEventListener('storage',e=>{if(e.key==='fixture:units'&&view==='list')renderList();});
+ window.fixture={units,renderList,setPartial:value=>{partial=!!value;renderList();}};renderList();
+})();
+</script><script defer src="/userscript.js"></script></html>
