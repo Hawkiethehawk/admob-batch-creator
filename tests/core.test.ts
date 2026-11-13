@@ -39,11 +39,11 @@ test('TSV and multiline records retain physical source row numbers', () => {
   assert.equal(rows[1].floor, '15');
 });
 
-test('invalid cells are row errors, all duplicate names are reported, and names are never truncated', () => {
+test('invalid cells are row errors, duplicate names are allowed, and names are never truncated', () => {
   const rows = parseInput('重复,60\n重复,40\n,20\n无金额,\n负值,-1\n多列,1,2\n"未闭合,20');
-  assert(rows.every((row) => row.errors.length));
-  assert(rows[0].errors.some((e) => e.includes('重复')));
-  assert(rows[1].errors.some((e) => e.includes('重复')));
+  assert.equal(rows[0].errors.length, 0);
+  assert.equal(rows[1].errors.length, 0);
+  assert(rows.slice(2).every((row) => row.errors.length));
   const long = '长'.repeat(129);
   assert.equal(parseInput(`${long},1`)[0].name, long);
   assert.equal(parseInput(`${long},1`, { maxNameLength: 128 })[0].name, long);
@@ -113,6 +113,8 @@ test('batch freezes identity, keeps distinct prices and validates public IDs', (
   assert.throws(() => createBatch([], identity, 'interstitial', 2, 'tabs', '', 'c'));
   assert.throws(() => createBatch(parseInput('一,1'), { ...identity, publisherId: 'pub-wrong' }, 'interstitial', 2, 'tabs', '', 'c'));
   assert.equal(createBatch(parseInput('一,1'), identity, 'interstitial', 3, 'single', '', 'c').concurrency, 1);
+  assert.equal(createBatch(parseInput('一,1'), identity, 'interstitial', 5, 'tabs', '', 'c').concurrency, 5);
+  assert.throws(() => createBatch(parseInput('一,1'), identity, 'interstitial', 6, 'tabs', '', 'c'), /1、2、3、4 或 5/);
 });
 
 test('CSV includes BOM, quotes all values, prevents spreadsheet formulas and filters safely', () => {
@@ -136,7 +138,8 @@ test('CSV includes BOM, quotes all values, prevents spreadsheet formulas and fil
 test('batch boundary revalidates hand-built rows instead of trusting their errors arrays', () => {
   const row = { line: 1, name: '广告', floor: '60', errors: [] };
   const make = (rows: typeof row[]) => createBatch(rows, identity, 'interstitial', 2, 'tabs', 'https://apps.admob.com/', 'controller');
-  assert.throws(() => make([row, { ...row, line: 2 }]), /重复/);
+  const duplicateNames = make([row, { ...row, line: 2 }]);
+  assert.equal(duplicateNames.tasks.length, 2);
   for (const name of ['', '  ', ' 广告', '广告 ', '长'.repeat(81), '\u0000广告']) assert.throws(() => make([{ ...row, name }]), /名称/);
   for (const floor of ['-1', '1,000', '1e2', '$60', '']) assert.throws(() => make([{ ...row, floor }]));
   assert.throws(() => make([{ ...row, floor: 60 as unknown as string }]), /字符串/);

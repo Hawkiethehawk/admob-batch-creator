@@ -2,142 +2,292 @@ import { chromium } from '@playwright/test';
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { mkdir, rm } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
+import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
-// Isolated headless contexts, local fixtures, and a GM shim. This does not
-// validate extension installation, a real AdMob revision, or HubVPS.
-const built=spawnSync(process.execPath,['scripts/build.mjs'],{stdio:'inherit'});if(built.status!==0)process.exit(built.status||1);
-const fixture=await readFile(new URL('./fixture.html',import.meta.url));
-const script=await readFile(new URL('../dist/admob-batch-creator.user.js',import.meta.url));
-const server=createServer((req,res)=>{res.setHeader('Content-Type',req.url?.startsWith('/userscript.js')?'text/javascript;charset=utf-8':'text/html;charset=utf-8');res.end(req.url?.startsWith('/userscript.js')?script:fixture);});
-await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
-const origin=`http://127.0.0.1:${server.address().port}`;
-const results={at:new Date().toISOString(),scope:'Headless isolated browser + semantic local fixture + simulated GM; not Tampermonkey or real AdMob acceptance',script:{bytes:script.length,sha256:createHash('sha256').update(script).digest('hex')},browsers:[]};
-function browserPath(override, relative, roots){
- const candidates=roots.filter(Boolean).map(root=>join(root,...relative));
- return override || candidates.find(path=>existsSync(path)) || candidates[0] || '';
+// Real isolated Chromium pages and Web Locks; simulated GM APIs and a
+// loopback-only backend using the redacted live DOM. Never uses HubVPS data.
+if (!process.env.ADMOB_TEST_SCRIPT) {
+  const built = spawnSync(process.execPath, ['scripts/build.mjs'], { stdio: 'inherit' });
+  if (built.status !== 0) process.exit(built.status || 1);
 }
-const configurations=[
- ['Chrome',browserPath(process.env.ADMOB_CHROME_PATH,['Google','Chrome','Application','chrome.exe'],[process.env.LOCALAPPDATA,process.env.ProgramFiles,process.env['ProgramFiles(x86)']])],
- ['Edge',browserPath(process.env.ADMOB_EDGE_PATH,['Microsoft','Edge','Application','msedge.exe'],[process.env['ProgramFiles(x86)'],process.env.ProgramFiles,process.env.LOCALAPPDATA])],
-];
-const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-const scratch=resolve('.scratch/browser-test');
-if(!scratch.startsWith(resolve('.')+'\\')&&!scratch.startsWith(resolve('.')+'/'))throw new Error('Scratch path escaped project');
-await mkdir(scratch,{recursive:true});process.env.TEMP=scratch;process.env.TMP=scratch;process.env.TMPDIR=scratch;
+const scriptPath = resolve(process.env.ADMOB_TEST_SCRIPT || 'dist/admob-batch-creator.user.js');
+const script = await readFile(scriptPath);
+const liveFixture = await readFile(new URL('./live_fixture.html', import.meta.url), 'utf8');
+const platform = await readFile(new URL('./fixtures/browser-platform.js', import.meta.url));
+const fixture = liveFixture.replace('</body>', '<script src="/platform.js"></script><script src="/userscript.js"></script></body>');
+const rowsCount = Number(process.env.ADMOB_BENCH_ROWS || 10);
+const saveDelayMs = Number(process.env.ADMOB_BENCH_SAVE_MS || 8000);
+assert.ok(Number.isInteger(rowsCount) && rowsCount >= 2 && rowsCount <= 100);
+assert.ok(Number.isFinite(saveDelayMs) && saveDelayMs >= 0 && saveDelayMs <= 15000);
+const backends = new Map();
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+const server = createServer(async (request, response) => {
+  try {
+    const url = new URL(request.url, 'http://127.0.0.1');
+    if (url.pathname === '/api/create') {
+      const backend = backends.get(url.searchParams.get('run'));
+      if (!backend || request.method !== 'POST') { response.writeHead(400).end('Unknown test run'); return; }
+      let body = ''; for await (const chunk of request) body += chunk;
+      const input = JSON.parse(body);
+      assert.ok(input.name && ['manual', 'auto', 'disabled'].includes(input.mode));
+      assert.ok(input.mode !== 'manual' || /^\d+(?:\.\d+)?$/.test(input.floor));
+      const record = { ...input, at: Date.now(), unitId: 'ca-app-pub-1111111111111111/' + String(7000000000 + ++backend.sequence) };
+      backend.requests.push(record); backend.inflight++; backend.peakInflight = Math.max(backend.peakInflight, backend.inflight);
+      await pause(backend.delay);
+      backend.inflight--; record.savedAt = Date.now();
+      response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(record));
+      return;
+    }
+    response.setHeader('Content-Type', url.pathname.endsWith('.js') ? 'text/javascript;charset=utf-8' : 'text/html;charset=utf-8');
+    if (url.pathname === '/userscript.js') response.end(script);
+    else if (url.pathname === '/platform.js') response.end(platform);
+    else if (url.pathname === '/sentinel') response.end('<title>User tab sentinel</title><h1>Unrelated user page</h1>');
+    else response.end(fixture);
+  } catch (error) { response.writeHead(500).end(error.message); }
+});
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const origin = `http://127.0.0.1:${server.address().port}`;
+const outputPath = resolve(process.env.ADMOB_BROWSER_RESULTS || 'tests/browser-results-0.5.0.json');
+const results = {
+  at: new Date().toISOString(),
+  scope: 'Isolated headless Chromium; real pages, Web Locks, native storage notifications; simulated GM and delayed loopback backend. Not HubVPS/Tampermonkey or real AdMob acceptance.',
+  script: { version: script.toString().match(/@version\s+(\S+)/)?.[1], bytes: script.length, sha256: createHash('sha256').update(script).digest('hex') },
+  workload: { rows: rowsCount, saveDelayMs, throttleMs: 2500 }, cases: [],
+  measurements: { heap: 'Sum of page CDP JSHeapUsedSize, sampled every 2 seconds; excludes native browser memory', serializedBytes: 'Logical UTF-16 bytes (2 * string length), not disk usage' },
+};
 
-async function setup(browser,url='/fixture.html'){
- const context=await browser.newContext({viewport:{width:1600,height:1300},acceptDownloads:true});
- const tabs=new Map();let opened=0;const errors=[];const opens=[];
- context.on('page',page=>page.on('pageerror',e=>errors.push(e.message)));
- await context.exposeBinding('__abcOpen',async({page},url,id)=>{opened++;opens.push(await page.evaluate(()=>{const k=Object.keys(localStorage).find(k=>k.startsWith('gm:abc:v1:batch:'));const b=k&&JSON.parse(localStorage.getItem(k));return {unitCount:JSON.parse(localStorage.getItem('fixture:units')||'[]').length,canaryPassed:b?.canaryPassed};}));const tab=await context.newPage();tabs.set(id,tab);await tab.goto(url);return true;});
- await context.exposeBinding('__abcClose',async(_source,id)=>{await tabs.get(id)?.close();return true;});
- await context.addInitScript(()=>{
-  const listeners=new Map();let index=0;const decode=s=>s===null?undefined:JSON.parse(s);
-  window.GM_getValue=(key,fallback)=>{const s=localStorage.getItem('gm:'+key);return s===null?fallback:decode(s);};
-  window.GM_setValue=(key,value)=>{const old=localStorage.getItem('gm:'+key),next=JSON.stringify(value);localStorage.setItem('gm:'+key,next);for(const item of listeners.values())if(item.key===key)item.callback(key,decode(old),value,false);};
-  window.GM_deleteValue=key=>localStorage.removeItem('gm:'+key);
-  window.GM_listValues=()=>Object.keys(localStorage).filter(k=>k.startsWith('gm:')).map(k=>k.slice(3));
-  window.GM_addValueChangeListener=(key,callback)=>{const id=++index;listeners.set(id,{key,callback});return id;};
-  window.GM_removeValueChangeListener=id=>listeners.delete(id);
-  addEventListener('storage',e=>{if(e.key?.startsWith('gm:'))for(const item of listeners.values())if(item.key===e.key.slice(3))item.callback(item.key,decode(e.oldValue),decode(e.newValue),true);});
-  window.GM_getTab=callback=>callback(JSON.parse(sessionStorage.getItem('mock:tab')||'{}'));
-  window.GM_saveTab=(tab,callback)=>{sessionStorage.setItem('mock:tab',JSON.stringify(tab));callback?.();};
-  window.GM_setClipboard=text=>{window.__mockClipboard=text;};
-  window.GM_openInTab=(url)=>{const id=crypto.randomUUID();void window.__abcOpen(url,id);return {closed:false,close(){this.closed=true;void window.__abcClose(id);}};};
- });
- const page=await context.newPage();await page.goto(origin+url);await page.locator('#abc-panel-host').waitFor({state:'attached'});
- await page.locator('#abc-panel-host .identity-state').filter({hasText:'账号与应用已识别'}).waitFor();
- return {context,page,errors,opens,get opened(){return opened;}};
+async function setup(browser, { delay = saveDelayMs } = {}) {
+  const id = randomUUID();
+  const backend = { sequence: 0, requests: [], delay, inflight: 0, peakInflight: 0 }; backends.set(id, backend);
+  const context = await browser.newContext({ viewport: { width: 1500, height: 1150 }, acceptDownloads: true });
+  await context.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+  const workers = new Map(); const errors = []; const opens = []; const sessions = new Map();
+  const metrics = { peakPages: 0, peakWorkers: 0, peakActiveAssignments: 0, peakHeapBytes: 0, peakDomNodes: 0 }; let sampleBusy = false;
+  context.on('page', page => {
+    page.on('pageerror', error => errors.push(error.message));
+    metrics.peakPages = Math.max(metrics.peakPages, context.pages().length);
+  });
+  async function sample() {
+    if (sampleBusy) return; sampleBusy = true;
+    try {
+      let heap = 0; let nodes = 0;
+      for (const page of context.pages()) {
+        if (page.isClosed()) continue;
+        let session = sessions.get(page);
+        if (!session) { session = await context.newCDPSession(page); sessions.set(page, session); await session.send('Performance.enable'); }
+        const report = await session.send('Performance.getMetrics');
+        const values = Object.fromEntries(report.metrics.map(value => [value.name, value.value]));
+        heap += values.JSHeapUsedSize || 0; nodes += values.Nodes || 0;
+      }
+      metrics.peakHeapBytes = Math.max(metrics.peakHeapBytes, heap); metrics.peakDomNodes = Math.max(metrics.peakDomNodes, nodes);
+    } catch { /* A context closing during an observation is expected. */ }
+    finally { sampleBusy = false; }
+  }
+  const sampler = setInterval(() => void sample(), 2000);
+  await context.exposeBinding('__abcOpen', async ({ page }, url, workerId) => {
+    opens.push(await page.evaluate(() => {
+      const key = Object.keys(localStorage).find(key => key.startsWith('gm:abc:v1:batch:'));
+      return { at: Date.now(), canaryPassed: key ? JSON.parse(localStorage.getItem(key)).canaryPassed : false };
+    }));
+    const worker = await context.newPage(); workers.set(workerId, worker);
+    metrics.peakWorkers = Math.max(metrics.peakWorkers, [...workers.values()].filter(page => !page.isClosed()).length);
+    await worker.goto(url); return true;
+  });
+  await context.exposeBinding('__abcClose', async (_source, workerId) => { await workers.get(workerId)?.close(); return true; });
+  await context.addInitScript(() => {
+    const listeners = new Map(); let listenerId = 0;
+    const decode = value => value === null ? undefined : JSON.parse(value);
+    const metrics = window.__gmMetrics = { writes: 0, writeBytes: 0, remoteNotifications: 0, probes: [] };
+    // Playwright also initializes each new about:blank document, where the
+    // secure-context UUID API is absent. This ID belongs only to the shim.
+    window.__gmTestTabId = typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : 'blank-' + Math.random();
+    window.GM_getValue = (key, fallback) => { const value = localStorage.getItem('gm:' + key); return value === null ? fallback : decode(value); };
+    window.GM_setValue = (key, value) => {
+      const old = localStorage.getItem('gm:' + key); const next = JSON.stringify(value);
+      metrics.writes++; metrics.writeBytes += 2 * (key.length + next.length);
+      if (value?.type === 'hello' && value.probe) metrics.probes.push(value.probe);
+      localStorage.setItem('gm:' + key, next);
+      for (const item of listeners.values()) if (item.key === key) item.callback(key, decode(old), value, false);
+    };
+    window.GM_deleteValue = key => localStorage.removeItem('gm:' + key);
+    window.GM_listValues = () => Object.keys(localStorage).filter(key => key.startsWith('gm:')).map(key => key.slice(3));
+    window.GM_addValueChangeListener = (key, callback) => { const id = ++listenerId; listeners.set(id, { key, callback }); return id; };
+    window.GM_removeValueChangeListener = id => listeners.delete(id);
+    addEventListener('storage', event => {
+      if (!event.key?.startsWith('gm:')) return;
+      for (const item of listeners.values()) if (item.key === event.key.slice(3)) {
+        metrics.remoteNotifications++; item.callback(item.key, decode(event.oldValue), decode(event.newValue), true);
+      }
+    });
+    window.GM_getTab = callback => callback(JSON.parse(sessionStorage.getItem('mock:tab') || '{}'));
+    window.GM_saveTab = (tab, callback) => { sessionStorage.setItem('mock:tab', JSON.stringify(tab)); callback?.(); };
+    window.GM_setClipboard = text => { window.__mockClipboard = text; };
+    window.GM_openInTab = url => {
+      const id = crypto.randomUUID(); void window.__abcOpen(url, id);
+      return { closed: false, close() { this.closed = true; void window.__abcClose(id); } };
+    };
+  });
+  const page = await context.newPage(); await page.goto(origin + '/v2/apps/2222222222/adunits/list?run=' + id);
+  await page.locator('#abc-panel-host .identity-state').filter({ hasText: '账号与应用已识别' }).waitFor();
+  return { context, page, backend, errors, opens, metrics, workers, sample,
+    async close() { clearInterval(sampler); await context.close(); backends.delete(id); } };
 }
-async function batch(page){return page.evaluate(()=>{const latestKey=Object.keys(localStorage).find(k=>k.startsWith('gm:abc:v1:latest:'));const latest=latestKey&&JSON.parse(localStorage.getItem(latestKey));const key=Object.keys(localStorage).find(k=>k.startsWith('gm:abc:v1:batch:')&&(!latest||k.endsWith(':'+latest)));return key?JSON.parse(localStorage.getItem(key)):null;});}
-async function waitBatch(page,phase,timeout=100000){
- try{await page.waitForFunction(expected=>{const latestKey=Object.keys(localStorage).find(k=>k.startsWith('gm:abc:v1:latest:'));const latest=latestKey&&JSON.parse(localStorage.getItem(latestKey));const key=Object.keys(localStorage).find(k=>k.startsWith('gm:abc:v1:batch:')&&(!latest||k.endsWith(':'+latest)));const b=key&&JSON.parse(localStorage.getItem(key));return b?.phase===expected;},phase,{timeout});return batch(page);}catch(e){throw new Error(e.message+'\nLast batch: '+JSON.stringify(await batch(page))+'\nNotice: '+await page.locator('#abc-panel-host .notice').textContent());}
+
+async function readBatch(page) {
+  return page.evaluate(() => {
+    const latest = Object.keys(localStorage).find(key => key.startsWith('gm:abc:v1:latest:'));
+    const id = latest && JSON.parse(localStorage.getItem(latest));
+    const key = Object.keys(localStorage).find(key => key.startsWith('gm:abc:v1:batch:') && key.endsWith(':' + id));
+    return key ? JSON.parse(localStorage.getItem(key)) : null;
+  });
 }
-async function list(page,key='units'){return page.evaluate(k=>JSON.parse(localStorage.getItem('fixture:'+k)||'[]'),key);}
-async function configure(page,rows,{format='interstitial',execution='single'}={}){
- await page.getByLabel('广告格式',{exact:true}).selectOption(format);
- await page.getByLabel('执行方式',{exact:true}).selectOption(execution);
- await page.getByLabel('CSV 或 TSV 输入',{exact:true}).fill('广告位名称,底价USD\n'+rows.map(r=>r.join(',')).join('\n'));
- await page.getByRole('button',{name:'解析到清单',exact:true}).click();
- await page.getByRole('button',{name:'预检（不提交）',exact:true}).click();
- await page.locator('#abc-panel-host .notice').filter({hasText:'预检不创建广告位。待创建'}).waitFor({timeout:50000});
- assert.equal((await list(page)).length,0,'preflight must not create');
- await page.getByRole('checkbox').check();
+async function configure(run, rows, concurrency, format = 'interstitial', mode = 'manual', execution = 'tabs') {
+  const page = run.page;
+  const panel = page.locator('#abc-panel-host');
+  await panel.getByLabel('广告格式', { exact: true }).selectOption(format);
+  await panel.getByLabel('底价模式', { exact: true }).selectOption(mode);
+  await panel.getByLabel('执行方式', { exact: true }).selectOption(execution);
+  if (execution === 'tabs') await panel.getByLabel('并发数', { exact: true }).selectOption(String(concurrency));
+  await page.getByLabel('CSV 或 TSV 输入', { exact: true }).fill((mode === 'manual' ? '广告位名称,底价USD\n' : '广告位名称\n') + rows.map(row => mode === 'manual' ? row.join(',') : row[0]).join('\n'));
+  assert.equal(await panel.locator('.input-table tbody tr:not(.error-row)').count(), rows.length, 'paste immediately fills editable rows');
+  await page.getByRole('checkbox').check();
 }
-async function start(page){await page.getByRole('button',{name:'开始创建',exact:true}).click();}
-async function verifySuccess(page,expected){
- const b=await waitBatch(page,'done');assert.equal(b.tasks.length,expected.length);assert.ok(b.tasks.every(t=>t.status==='success'),JSON.stringify(b.tasks));
- const actual=await list(page);assert.equal(actual.length,expected.length);assert.equal((await list(page,'clicks')).length,expected.length,'one submit per row');
- for(const [name,floor]of expected){const t=b.tasks.find(t=>t.name===name);assert.equal(t.actual.name,name);assert.equal(t.actual.currency,'USD');assert.equal(t.actual.floor,floor);assert.match(t.actual.unitId,/\/\d{10}$/);assert.equal(t.actual.verified,true);}
- return b;
+async function waitDone(run, timeout = 300000) {
+  const end = Date.now() + timeout; let reported = -1;
+  while (Date.now() < end) {
+    const batch = await readBatch(run.page);
+    run.metrics.peakActiveAssignments = Math.max(run.metrics.peakActiveAssignments, batch?.tasks.filter(task => ['filling', 'submitting', 'verifying'].includes(task.status)).length || 0);
+    const completed = batch?.tasks.filter(task => task.status === 'success').length || 0;
+    if (completed !== reported) { reported = completed; console.log('PROGRESS ' + completed + '/' + (batch?.tasks.length || 0) + ' workers=' + run.opens.length); }
+    if (batch?.phase === 'done') return batch;
+    if (batch?.phase === 'paused') throw new Error('Unexpected pause: ' + JSON.stringify(batch.tasks));
+    await pause(200);
+  }
+  throw new Error('Timed out: ' + JSON.stringify(await readBatch(run.page)));
 }
-async function runCase(browser,label,fn){if(process.env.CASE_FILTER&&!label.includes(process.env.CASE_FILTER))return {case:label,skipped:true};const at=Date.now();console.log('START '+label);try{const details=await fn();const result={case:label,pass:true,elapsedMs:Date.now()-at,...details};console.log(JSON.stringify(result));return result;}catch(error){const result={case:label,pass:false,elapsedMs:Date.now()-at,error:error.stack};console.log(JSON.stringify(result));return result;}}
-try{
- for(const [name,executablePath]of configurations){
-  if(process.env.BROWSER_FILTER&&name!==process.env.BROWSER_FILTER)continue;
-  if(!existsSync(executablePath)){results.browsers.push({name,available:false,executablePath});continue;}
-  const browser=await chromium.launch({executablePath,headless:true,downloadsPath:join(scratch,'downloads')});const info={name,version:browser.version(),available:true,cases:[]};results.browsers.push(info);
-  try{
-   info.cases.push(await runCase(browser,'single-interstitial-distinct-floors-and-export',async()=>{
-    const run=await setup(browser);try{const rows=[['INT_60','60'],['INT_40','40.25']];await configure(run.page,rows);await start(run.page);await verifySuccess(run.page,rows);
-     const downloadPromise=run.page.waitForEvent('download');await run.page.getByRole('button',{name:'导出全部',exact:true}).click();const download=await downloadPromise;const file=await download.path();const csv=await readFile(file,'utf8');assert.ok(csv.includes('INT_60'));assert.ok(csv.includes('ca-app-pub-1234567890123456/'));
-     await run.page.getByRole('button',{name:'复制“名称 + ID”',exact:true}).click();assert.ok((await run.page.evaluate(()=>window.__mockClipboard)).includes('INT_40'));assert.equal(run.opened,0);assert.deepEqual(run.errors,[]);return {rows:rows.length,preflightSubmits:0,workerTabs:run.opened,exportAndClipboard:true};
-    }finally{await run.context.close();}
-   }));
-   info.cases.push(await runCase(browser,'single-app-open',async()=>{
-    const run=await setup(browser);try{const rows=[['OPEN_15','15.01']];await configure(run.page,rows,{format:'app-open'});await start(run.page);const b=await verifySuccess(run.page,rows);assert.equal(b.tasks[0].actual.format,'app-open');assert.deepEqual(run.errors,[]);return {rows:1};}finally{await run.context.close();}
-   }));
-   info.cases.push(await runCase(browser,'two-workers-canary-pool-reuse-real-web-locks',async()=>{
-    const run=await setup(browser);try{const started=Date.now();const rows=[['POOL_60','60'],['POOL_40','40'],['POOL_20','20'],['POOL_15','15']];await configure(run.page,rows,{execution:'tabs'});assert.equal(run.opened,1);await start(run.page);const b=await verifySuccess(run.page,rows);assert.ok(Date.now()-started<40000,'four-row pool must finish before any 60s ACK timeout');assert.equal(b.canaryPassed,true);assert.equal(run.opened,2,'fixed pool should reuse two tabs');assert.equal(new Set(b.tasks.map(t=>t.workerId)).size,2);assert.equal(run.opens[1].canaryPassed,true,'second worker opens only after verified canary');const clicks=await list(run.page,'clicks');for(let i=1;i<clicks.length;i++)assert.ok(clicks[i].at-clicks[i-1].at>=2000,'global submit throttle');assert.deepEqual(run.errors,[]);return {rows:4,workerTabs:run.opened,secondWorkerAfterVerifiedCanary:true,globalSubmitThrottle:true,ackTimeoutAvoided:true,realWebLocksCrossPage:true,gm:'simulated'};}finally{await run.context.close();}
-   }));
-   info.cases.push(await runCase(browser,'pause-after-submit-continues-verification-and-resume',async()=>{
-    const run=await setup(browser,'/fixture.html?saveDelay=2000');try{const rows=[['PAUSE_60','60'],['PAUSE_40','40']];await configure(run.page,rows);await start(run.page);
-     await run.page.waitForFunction(()=>{const k=Object.keys(localStorage).find(k=>k.startsWith('gm:abc:v1:batch:'));return k&&['submitting','verifying'].includes(JSON.parse(localStorage.getItem(k)).tasks[0].status);},{timeout:30000});
-     await run.page.getByRole('button',{name:'暂停',exact:true}).click();await waitBatch(run.page,'paused');await pause(3500);const stopped=await batch(run.page);assert.equal(stopped.tasks[0].status,'success');assert.equal((await list(run.page)).length,1);assert.equal(stopped.tasks[1].status,'pending');await run.page.getByRole('button',{name:'继续',exact:true}).click();await verifySuccess(run.page,rows);assert.deepEqual(run.errors,[]);return {completedDuringPause:1,secondDispatchedAfterResume:true};
-    }finally{await run.context.close();}
-   }));
-   info.cases.push(await runCase(browser,'ambiguous-dollar-blocks-submit',async()=>{
-    const run=await setup(browser,'/fixture.html?currency=%24');try{await configure(run.page,[['BLOCK_60','60']]);await start(run.page);const b=await waitBatch(run.page,'paused',30000);assert.equal((await list(run.page,'clicks')).length,0);assert.equal(b.tasks[0].intentAt,undefined);assert.equal(b.tasks[0].status,'failed');assert.match(b.tasks[0].reason,/USD|美元/);assert.deepEqual(run.errors,[]);return {createClicks:0,submitIntent:false};}finally{await run.context.close();}
-   }));
-   info.cases.push(await runCase(browser,'controller-refresh-after-click-never-resubmits',async()=>{
-    const run=await setup(browser,'/fixture.html?saveDelay=5000');try{
-     await configure(run.page,[['REFRESH_CTRL','60']]);await start(run.page);
-     await run.page.waitForFunction(()=>JSON.parse(localStorage.getItem('fixture:clicks')||'[]').length===1);
-     const before=await batch(run.page);assert.ok(before.tasks[0].intentAt);
-     await run.page.reload();const recovered=await waitBatch(run.page,'paused',15000);assert.equal(recovered.tasks[0].status,'uncertain');assert.equal(recovered.tasks[0].intentAt,before.tasks[0].intentAt);
-     await run.page.getByRole('button',{name:'核验结果不确定项',exact:true}).click();
-     await run.page.waitForFunction(()=>{const k=Object.keys(localStorage).find(k=>k.startsWith('gm:abc:v1:batch:'));return k&&JSON.parse(localStorage.getItem(k)).tasks[0].status==='uncertain';});
-     assert.equal((await list(run.page,'clicks')).length,1);assert.equal((await list(run.page)).length,0);assert.deepEqual(run.errors,[]);return {createClicks:1,recoveredStatus:'uncertain',readOnlyVerificationNoResubmit:true};
-    }finally{await run.context.close();}
-   }));
-   info.cases.push(await runCase(browser,'worker-refresh-after-click-never-resubmits',async()=>{
-    const run=await setup(browser,'/fixture.html?saveDelay=5000');try{
-     await configure(run.page,[['REFRESH_WORKER','60']],{execution:'tabs'});await start(run.page);
-     await run.page.waitForFunction(()=>JSON.parse(localStorage.getItem('fixture:clicks')||'[]').length===1);
-     const workers=[];for(const candidate of run.context.pages())if(await candidate.locator('#abc-worker-status').count())workers.push(candidate);assert.equal(workers.length,1);
-     await workers[0].reload();const recovered=await waitBatch(run.page,'paused',15000);assert.equal(recovered.tasks[0].status,'uncertain');assert.ok(recovered.tasks[0].intentAt);assert.equal((await list(run.page,'clicks')).length,1);assert.equal((await list(run.page)).length,0);assert.deepEqual(run.errors,[]);return {createClicks:1,recoveredStatus:'uncertain',workerTabs:run.opened};
-    }finally{await run.context.close();}
-   }));
-   info.cases.push(await runCase(browser,'publisher-controller-lock-across-pages',async()=>{
-    const run=await setup(browser);try{await configure(run.page,[['LOCK_60','60']]);const second=await run.context.newPage();await second.goto(origin+'/fixture.html');await second.locator('#abc-panel-host .identity-state').filter({hasText:'已有活动主控'}).waitFor({timeout:10000});assert.equal((await list(run.page,'clicks')).length,0);return {secondControllerBlocked:true};}finally{await run.context.close();}
-   }));
-   info.cases.push(await runCase(browser,'draft-stop-persists-through-reload-and-allows-next-preflight',async()=>{
-    const run=await setup(browser,'/fixture.html?partial=1');try{
-     await configure(run.page,[['STOP_DRAFT','60']]);const draft=await batch(run.page);assert.equal(draft.phase,'draft');assert.equal(draft.tasks[0].status,'uncertain');assert.equal(draft.tasks[0].intentAt,undefined);assert.equal(draft.confirmedAt,undefined);const originalReason=draft.tasks[0].reason;
-     await run.page.getByRole('button',{name:'停止',exact:true}).click();const stopped=await waitBatch(run.page,'done',10000);assert.ok(stopped.stopRequestedAt);assert.equal(stopped.tasks[0].status,'uncertain');assert.equal(stopped.tasks[0].reason,originalReason);assert.equal((await list(run.page,'clicks')).length,0);
-     await run.page.reload();await run.page.locator('#abc-panel-host').waitFor({state:'attached'});const restored=await waitBatch(run.page,'done',10000);assert.equal(restored.id,stopped.id);assert.equal(restored.stopRequestedAt,stopped.stopRequestedAt);assert.equal(await run.page.getByRole('button',{name:'继续',exact:true}).isDisabled(),true);assert.equal(await run.page.getByRole('button',{name:'开始创建',exact:true}).isDisabled(),true);
-     await run.page.evaluate(()=>window.fixture.setPartial(false));await configure(run.page,[['NEXT_DRAFT','40']]);const next=await batch(run.page);assert.notEqual(next.id,stopped.id);assert.equal(next.phase,'draft');assert.equal(next.tasks[0].status,'pending');assert.equal(await run.page.getByRole('button',{name:'开始创建',exact:true}).isEnabled(),true);
-     const historical=await run.page.evaluate(id=>{const k=Object.keys(localStorage).find(k=>k.startsWith('gm:abc:v1:batch:')&&k.endsWith(':'+id));return JSON.parse(localStorage.getItem(k));},stopped.id);assert.equal(historical.phase,'done');assert.equal(historical.stopRequestedAt,stopped.stopRequestedAt);assert.equal(historical.tasks[0].status,'uncertain');assert.equal(historical.tasks[0].reason,originalReason);assert.equal(historical.tasks[0].intentAt,undefined);assert.equal((await list(run.page,'clicks')).length,0);assert.deepEqual(run.errors,[]);
-     return {draftStopCreateClicks:0,reloadCannotResume:true,nextPreflightAllowed:true,uncertainEvidencePreserved:true};
-    }finally{await run.context.close();}
-   }));
-  }finally{await browser.close();}
-  console.log(JSON.stringify(info,null,2));
- }
-}finally{server.close();await writeFile(new URL('../docs/browser-results.json',import.meta.url),JSON.stringify(results,null,2)+'\n');await rm(scratch,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
-if(results.browsers.some(b=>!b.available||b.cases.some(c=>c.pass===false)))process.exitCode=1;
+const gaps = values => values.slice(1).map((value, index) => value - values[index]);
+function stats(values) { const sorted = [...values].sort((a, b) => a - b); return { min: sorted[0] ?? null, median: sorted[Math.floor(sorted.length / 2)] ?? null, max: sorted.at(-1) ?? null }; }
+
+async function benchmark(browser, concurrency) {
+  const run = await setup(browser);
+  try {
+    const rows = Array.from({ length: rowsCount }, (_, index) => ['POOL_' + (index + 1), (100 + index * 7 + (index % 2 ? 0.25 : 0)).toString()]);
+    const setupAt = Date.now(); await configure(run, rows, concurrency); const inputMs = Date.now() - setupAt;
+    const start = Date.now(); await run.page.getByRole('button', { name: '开始创建', exact: true }).click();
+    const batch = await waitDone(run); const elapsedMs = Date.now() - start; await run.sample();
+    assert.equal(batch.tasks.length, rows.length); assert.ok(batch.tasks.every(task => task.status === 'success'), JSON.stringify(batch.tasks));
+    assert.equal(run.backend.requests.length, rows.length, 'one backend submit per input row');
+    assert.equal(new Set(run.backend.requests.map(row => row.unitId)).size, rows.length, 'every ID is unique');
+    assert.equal(new Set(run.backend.requests.map(row => row.name)).size, rows.length, 'no duplicate submissions');
+    for (const [name, floor] of rows) {
+      const request = run.backend.requests.find(row => row.name === name); const task = batch.tasks.find(task => task.name === name);
+      assert.equal(request.floor, floor); assert.equal(request.format, 'interstitial'); assert.equal(task.actual.name, name); assert.equal(task.actual.floor, floor);
+      assert.equal(task.actual.unitId, request.unitId); assert.equal(task.actual.currency, 'USD'); assert.equal(task.actual.appId, batch.identity.appId);
+      assert.equal(task.actual.publisherId, batch.identity.publisherId); assert.equal(task.actual.mode, 'manual'); assert.equal(task.actual.verified, true);
+    }
+    assert.ok(run.opens.length <= concurrency, 'pool never exceeds configured capacity');
+    const canaryDone = Date.parse(batch.tasks[0].finishedAt);
+    assert.ok(batch.tasks.slice(1).every(task => Date.parse(task.logs.find(log => log.step === 'filling')?.at) >= canaryDone), 'new batch first-row verification precedes remaining work');
+    const assignments = new Map(); for (const task of batch.tasks) assignments.set(task.workerId, (assignments.get(task.workerId) || 0) + 1);
+    if (rows.length > concurrency) assert.ok([...assignments.values()].some(count => count > 1), 'worker pages are reused');
+    assert.ok(batch.startedAt && batch.completedAt && Date.parse(batch.completedAt) >= Date.parse(batch.confirmedAt), 'batch records total workflow timestamps');
+    const grants = gaps(batch.tasks.map(task => Date.parse(task.intentAt)).sort((a, b) => a - b));
+    const submits = gaps(run.backend.requests.map(row => row.at));
+    assert.ok(grants.every(gap => gap >= 2450), 'publisher-wide grants retain the 2500 ms throttle');
+    assert.ok(submits.every(gap => gap >= 1950), 'no burst submissions between worker pages');
+    const gm = []; for (const page of run.context.pages()) gm.push(await page.evaluate(() => window.__gmMetrics));
+    assert.ok(gm.flatMap(page => page.probes).some(probe => probe.locked && probe.notifications), 'real cross-page lock exclusion and native remote notification observed');
+    const remoteNotifications = gm.reduce((sum, page) => sum + page.remoteNotifications, 0); assert.ok(remoteNotifications > 0); assert.deepEqual(run.errors, []);
+    const storage = await run.page.evaluate(() => ({ entries: localStorage.length,
+      bytes: Object.keys(localStorage).reduce((total, key) => total + 2 * (key.length + localStorage.getItem(key).length), 0),
+      gmEntries: Object.keys(localStorage).filter(key => key.startsWith('gm:')).length }));
+    return { concurrency, rows: rows.length, inputMs, automaticPreparationMs: Date.parse(batch.confirmedAt) - Date.parse(batch.startedAt), elapsedMs, elapsedIncludesAutomaticPreparation: true, rowsPerMinute: rows.length * 60000 / elapsedMs,
+      workerTabsOpened: run.opens.length, ...run.metrics, peakInflightSaves: run.backend.peakInflight,
+      tasksPerWorker: [...assignments.values()].sort((a, b) => b - a), grantIntervalsMs: stats(grants), submitIntervalsMs: stats(submits), remoteNotifications,
+      gmWrites: gm.reduce((sum, page) => sum + page.writes, 0), gmWriteBytes: gm.reduce((sum, page) => sum + page.writeBytes, 0), storage,
+      assertions: ['exact-name-floor-format-app-publisher-id', 'unique-id-and-no-resubmit', 'verified-canary-before-expansion', 'pool-reuse-and-cap', 'global-throttle', 'real-Web-Locks', 'native-remote-storage-notifications'] };
+  } finally { await run.close(); }
+}
+async function lockChecks(browser) {
+  const run = await setup(browser, { delay: 0 });
+  try {
+    await run.page.getByRole('button', { name: '检测跨页能力', exact: true }).click();
+    await run.page.locator('#abc-panel-host .notice').filter({ hasText: '跨页能力检查通过' }).waitFor();
+    const sentinel = await run.context.newPage(); await sentinel.goto(origin + '/sentinel');
+    const second = await run.context.newPage(); await second.goto(run.page.url());
+    await second.getByRole('button', { name: '检测跨页能力', exact: true }).click();
+    await second.locator('#abc-panel-host .notice').filter({ hasText: '已有活动主控' }).waitFor({ timeout: 10000 });
+    const worker = [...run.workers.values()][0]; const state = await worker.evaluate(() => JSON.parse(sessionStorage.getItem('mock:tab')));
+    const duplicate = await run.context.newPage(); const url = new URL(run.page.url()); url.searchParams.set('__admob_batch_worker', state.abcWorkerId);
+    await duplicate.goto(url.href);
+    await duplicate.locator('#abc-batch-creator').filter({ hasText: '已有活动主控' }).waitFor({ timeout: 10000 });
+    assert.equal(run.backend.requests.length, 0); assert.equal(sentinel.isClosed(), false); assert.equal(await sentinel.title(), 'User tab sentinel'); assert.deepEqual(run.errors, []);
+    return { controllerMutex: true, workerMutex: true, unrelatedTabRetained: true, createRequests: 0 };
+  } finally { await run.close(); }
+}
+
+async function modesAndHistory(browser) {
+  const run = await setup(browser, { delay: 0 });
+  const batches = [];
+  try {
+    for (const format of ['interstitial', 'app-open', 'native']) for (const mode of ['manual', 'auto', 'disabled']) {
+      const name = `LOCAL_${format}_${mode}`;
+      await configure(run, [[name, '1000']], 1, format, mode, 'single');
+      await run.page.getByRole('button', { name: '开始创建', exact: true }).click();
+      await run.page.waitForFunction(name => {
+        const latest = Object.keys(localStorage).find(key => key.startsWith('gm:abc:v1:latest:'));
+        const id = latest && JSON.parse(localStorage.getItem(latest));
+        const key = Object.keys(localStorage).find(key => key.startsWith('gm:abc:v1:batch:') && key.endsWith(':' + id));
+        return key && JSON.parse(localStorage.getItem(key)).tasks[0].name === name;
+      }, name);
+      const batch = await waitDone(run, 40000); batches.push(batch);
+      assert.equal(batch.tasks.length, 1); assert.equal(batch.tasks[0].status, 'success');
+      assert.equal(batch.tasks[0].actual.mode, mode); assert.equal(batch.tasks[0].actual.format, format);
+      assert.equal(batch.tasks[0].actual.floor, mode === 'manual' ? '1000' : '');
+      assert.ok(batch.startedAt && batch.completedAt);
+    }
+    assert.equal(run.backend.requests.length, 9, 'one submit for every format/mode combination');
+    const active = await readBatch(run.page);
+    const panel = run.page.locator('#abc-panel-host');
+    await panel.getByLabel('任务批次', { exact: true }).selectOption(batches[0].id);
+    await panel.locator('.batch-meta').filter({ hasText: batches[0].id }).waitFor();
+    await panel.getByRole('button', { name: '复制“名称 + ID”', exact: true }).click();
+    assert.match(await run.page.evaluate(() => window.__mockClipboard), /LOCAL_interstitial_manual/);
+    const downloaded = run.page.waitForEvent('download');
+    await panel.getByRole('button', { name: '导出全部', exact: true }).click();
+    const csv = await readFile(await (await downloaded).path(), 'utf8');
+    assert.ok(csv.includes(batches[0].id)); assert.ok(!csv.includes(active.id));
+    assert.deepEqual(await readBatch(run.page), active, 'history selection/copy/export leave active batch untouched');
+    assert.equal(await panel.getByRole('button', { name: '开始创建', exact: true }).isDisabled(), true);
+    assert.deepEqual(run.errors, []);
+    return { combinations: 9, succeeded: 9, createRequests: 9, historyCopyExportIsolated: true, completeWorkflowTimestamps: true };
+  } finally { await run.close(); }
+}
+
+let browser;
+try {
+  const executablePath = process.env.ADMOB_BROWSER_PATH;
+  if (executablePath) assert.ok(existsSync(executablePath), 'ADMOB_BROWSER_PATH does not exist');
+  browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
+  results.browser = { name: 'Chromium', version: browser.version(), profile: 'temporary isolated Playwright context' };
+  const cases = [['cross-page-locks', () => lockChecks(browser)], ['modes-and-history', () => modesAndHistory(browser)], ['concurrency-1', () => benchmark(browser, 1)], ['concurrency-5', () => benchmark(browser, 5)]];
+  for (const [name, execute] of cases) {
+    if (existsSync(resolve('tests/.browser-pause'))) { results.paused = true; break; }
+    if (process.env.CASE_FILTER && !name.includes(process.env.CASE_FILTER)) continue;
+    console.log('START ' + name);
+    try { const details = await execute(); results.cases.push({ name, pass: true, ...details }); console.log(JSON.stringify(results.cases.at(-1))); }
+    catch (error) { results.cases.push({ name, pass: false, error: error.stack }); console.error(error.stack); }
+    // Persist every completed case before opening the next context so a
+    // resource pause never loses already measured evidence.
+    await writeFile(outputPath, JSON.stringify(results, null, 2) + '\n');
+  }
+  const one = results.cases.find(result => result.name === 'concurrency-1' && result.pass); const five = results.cases.find(result => result.name === 'concurrency-5' && result.pass);
+  if (one && five) results.comparison = { speedup: one.elapsedMs / five.elapsedMs, timeReductionPercent: 100 * (1 - five.elapsedMs / one.elapsedMs), additionalWorkerTabs: five.peakWorkers - one.peakWorkers };
+} finally {
+  if (browser) await browser.close(); await new Promise(resolve => server.close(resolve));
+  await writeFile(outputPath, JSON.stringify(results, null, 2) + '\n'); console.log('RESULTS ' + outputPath);
+}
+if (!results.cases.length || results.cases.some(result => !result.pass)) process.exitCode = 1;

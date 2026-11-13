@@ -1,5 +1,6 @@
-import type { Actual, AdFormat, Batch, Identity, InputRow, Lookup, Status, Task } from './types.ts';
-import { FORMAT_ZH, STATUS_ZH } from './types.ts';
+import type { Actual, AdFormat, Batch, FloorMode, Identity, InputRow, Lookup, Status, Task } from './types.ts';
+import { FORMAT_ZH, MODE_ZH, STATUS_ZH } from './types.ts';
+import { summarizeBatch, batchElapsed } from './history.ts';
 
 /** Money is kept as decimal text throughout; no Number conversion or rounding. */
 export function normalizeDecimal(value: string): string {
@@ -112,7 +113,8 @@ function readRecords(text: string, delimiter: string): CsvRecord[] {
   return records;
 }
 
-export function parseInput(text: string, options: { maxNameLength?: number } = {}): InputRow[] {
+export function parseInput(text: string, options: { maxNameLength?: number; mode?: FloorMode } = {}): InputRow[] {
+  const manual = !options.mode || options.mode === 'manual';
   const maxNameLength = Math.min(MAX_NAME_LENGTH, options.maxNameLength ?? MAX_NAME_LENGTH);
   if (!Number.isInteger(maxNameLength) || maxNameLength < 1) throw new Error('名称长度限制无效');
   const cleaned = text.replace(/^\uFEFF/, '');
@@ -120,27 +122,32 @@ export function parseInput(text: string, options: { maxNameLength?: number } = {
   const headerName = /^(广告位名称|广告单元名称|名称|ad\s*unit\s*name)$/i;
   const headerFloor = /^(底价|底价usd|底价[（(]usd\s*[/／]\s*千次展示[）)]|floor(?:\s*usd)?)$/i;
   if (records[0]?.fields.length === 2 && headerName.test(records[0].fields[0].trim()) && headerFloor.test(records[0].fields[1].trim()) && !records[0].errors.length) records.shift();
+  else if (!manual && records[0]?.fields.length === 1 && headerName.test(records[0].fields[0].trim()) && !records[0].errors.length) records.shift();
   const rows: InputRow[] = records.map((record) => {
     const [name = '', rawFloor = ''] = record.fields;
     const errors = [...new Set(record.errors)];
-    if (record.fields.length !== 2) errors.push(`应为两列，实际为 ${record.fields.length} 列`);
+    if (record.fields.length !== 2 && (manual || record.fields.length !== 1)) errors.push(`应为${manual ? '两列' : '名称一列或名称、底价两列'}，实际为 ${record.fields.length} 列`);
     if (!name.trim()) errors.push('广告位名称不能为空');
     if (name !== name.trim()) errors.push('名称前后存在空白，请明确修正');
     if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(name)) errors.push('名称包含不支持的控制字符');
     if (name.length > maxNameLength) errors.push(`名称超过限制 ${maxNameLength} 个字符，未截断`);
     let floor = rawFloor;
-    if (!rawFloor.trim()) errors.push('缺失底价');
-    else { try { floor = normalizeDecimal(rawFloor); } catch (error) { errors.push((error as Error).message); } }
+    if (manual) {
+      if (!rawFloor.trim()) errors.push('缺失底价');
+      else { try { floor = normalizeDecimal(rawFloor); } catch (error) { errors.push((error as Error).message); } }
+    }
     return { line: record.line, name, floor, errors };
   });
-  const occurrences = new Map<string, number>();
-  for (const row of rows) if (row.name) occurrences.set(row.name, (occurrences.get(row.name) ?? 0) + 1);
-  for (const row of rows) if ((occurrences.get(row.name) ?? 0) > 1) row.errors.push('输入清单中存在重复名称，请逐行处理');
+  // AdMob permits duplicate ad-unit names. Each row is an independent create
+  // request; the new unit ID, not the name, distinguishes the result.
   return rows;
 }
 
 export interface LookupClassification { status: 'pending' | 'exists' | 'conflict' | 'uncertain'; reason: string; actual?: Partial<Actual> }
-export function classifyLookup(lookup: Lookup, identity: Identity, format: AdFormat, name: string, floor: string): LookupClassification {
+export function matchesFloor(actual: Partial<Actual>, floor: string, mode: FloorMode = 'manual'): boolean {
+  return actual.mode === mode && (mode !== 'manual' || (actual.currency === 'USD' && actual.floor !== undefined && decimalEqual(actual.floor, floor)));
+}
+export function classifyLookup(lookup: Lookup, identity: Identity, format: AdFormat, name: string, floor: string, mode: FloorMode = 'manual'): LookupClassification {
   if (!lookup.complete) return { status: 'uncertain', reason: lookup.reason || '已有广告位读取不完整，不能判定不存在' };
   const matches = lookup.matches.filter((match) => match.name === name);
   if (matches.length === 0) return { status: 'pending', reason: '已完整检查，未发现同名广告位' };
@@ -149,11 +156,11 @@ export function classifyLookup(lookup: Lookup, identity: Identity, format: AdFor
   if (actual.publisherId !== identity.publisherId || actual.appId !== identity.appId) return { status: 'uncertain', reason: '同名结果所属发布商或应用无法确认', actual };
   if (!actual.unitId || !/^ca-app-pub-\d{16}\/\d{10}$/.test(actual.unitId) || !actual.unitId.startsWith(`ca-app-${identity.publisherId}/`)) return { status: 'uncertain', reason: '未获得可核对的真实广告位 ID', actual };
   if (actual.format && actual.format !== format) return { status: 'conflict', reason: '同名广告位的广告格式不同', actual };
-  if (actual.mode && actual.mode !== 'manual') return { status: 'conflict', reason: '同名广告位不是手动底价模式', actual };
-  if (actual.currency && actual.currency !== 'USD') return { status: 'conflict', reason: '同名广告位底价币种不是 USD', actual };
-  if (actual.floor !== undefined && !decimalEqual(actual.floor, floor)) return { status: 'conflict', reason: '同名广告位底价金额不同或无法解释', actual };
-  if (!actual.verified || actual.format !== format || actual.mode !== 'manual' || actual.currency !== 'USD' || actual.floor === undefined) return { status: 'uncertain', reason: '同名广告位配置未完整核验', actual };
-  return { status: 'exists', reason: '已有同名、同格式、同手动美元底价广告位，跳过创建', actual };
+  if (actual.mode && actual.mode !== mode) return { status: 'conflict', reason: '同名广告位的底价模式不同', actual };
+  if (mode === 'manual' && actual.currency && actual.currency !== 'USD') return { status: 'conflict', reason: '同名广告位底价币种不是 USD', actual };
+  if (mode === 'manual' && actual.floor !== undefined && !decimalEqual(actual.floor, floor)) return { status: 'conflict', reason: '同名广告位底价金额不同或无法解释', actual };
+  if (!actual.verified || actual.format !== format || !matchesFloor(actual, floor, mode)) return { status: 'uncertain', reason: '同名广告位配置未完整核验', actual };
+  return { status: 'exists', reason: '已有同名、同格式、同底价配置广告位，跳过创建', actual };
 }
 
 const ALLOWED: Record<Status, Status[]> = {
@@ -177,8 +184,7 @@ export function transition(task: Task, status: Status, reason = ''): Task {
     if (!actual?.verified || !actual.unitId || !/^ca-app-pub-\d{16}\/\d{10}$/.test(actual.unitId)
       || !actual.publisherId || !actual.appId || !actual.unitId.startsWith(`ca-app-${actual.publisherId}/`)
       || !actual.appId.startsWith(`ca-app-${actual.publisherId}~`) || actual.name !== task.name
-      || !actual.format || actual.mode !== 'manual' || actual.currency !== 'USD'
-      || actual.floor === undefined || !decimalEqual(actual.floor, task.floor)) {
+      || !actual.format || !matchesFloor(actual, task.floor, task.mode ?? 'manual')) {
       throw new Error('实际保存配置与广告位 ID 尚未完整核验，不能标记成功');
     }
   }
@@ -207,27 +213,26 @@ export function recoverTask(task: Task): Task {
 }
 
 function newId(): string { return globalThis.crypto.randomUUID(); }
-export function createBatch(rows: InputRow[], identity: Identity, format: AdFormat, concurrency: number, execution: 'tabs' | 'single', sourceUrl: string, controllerId: string): Batch {
+export function createBatch(rows: InputRow[], identity: Identity, format: AdFormat, concurrency: number, execution: 'tabs' | 'single', sourceUrl: string, controllerId: string, mode: FloorMode = 'manual'): Batch {
+  if (!['manual', 'auto', 'disabled'].includes(mode)) throw new Error('不支持的底价模式');
   if (!Array.isArray(rows) || !rows.length) throw new Error('请输入至少一条广告位');
-  const names = new Set<string>();
   for (const row of rows) {
     if (!row || !Array.isArray(row.errors) || row.errors.length) throw new Error('输入存在行级错误，请先修正');
     if (typeof row.name !== 'string' || !row.name.trim() || row.name !== row.name.trim() || row.name.length > MAX_NAME_LENGTH || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(row.name)) throw new Error(`第 ${row.line} 行广告位名称无效或超过 ${MAX_NAME_LENGTH} 个字符`);
     if (!Number.isSafeInteger(row.line) || row.line < 1) throw new Error('输入原始行号无效');
-    if (names.has(row.name)) throw new Error(`输入包含重复广告位名称：${row.name}`);
-    names.add(row.name);
+    // Duplicate names are allowed by AdMob; do not reject the row here.
     if (typeof row.floor !== 'string') throw new Error(`第 ${row.line} 行底价须为十进制字符串`);
-    normalizeDecimal(row.floor);
+    if (mode === 'manual') normalizeDecimal(row.floor);
   }
   if (!/^pub-\d{16}$/.test(identity.publisherId) || !/^ca-app-pub-\d{16}~\d{10}$/.test(identity.appId) || !identity.appId.startsWith(`ca-app-${identity.publisherId}~`)) throw new Error('发布商 ID 或应用 ID 无效或不匹配');
-  if (![1, 2, 3].includes(concurrency)) throw new Error('并发数必须为 1、2 或 3');
-  if (!['interstitial', 'app-open'].includes(format)) throw new Error('不支持的广告格式');
+  if (![1, 2, 3, 4, 5].includes(concurrency)) throw new Error('并发数必须为 1、2、3、4 或 5');
+  if (!['interstitial', 'app-open', 'native'].includes(format)) throw new Error('不支持的广告格式');
   if (!['tabs', 'single'].includes(execution)) throw new Error('不支持的执行模式');
   if (typeof controllerId !== 'string' || !controllerId.trim()) throw new Error('主控标识不能为空');
   return {
-    schema: 1, id: newId(), identity: structuredClone(identity), format, mode: 'manual', currency: 'USD', concurrency: execution === 'single' ? 1 : concurrency,
+    schema: 1, id: newId(), identity: structuredClone(identity), format, mode, currency: 'USD', concurrency: execution === 'single' ? 1 : concurrency,
     execution, sourceUrl, phase: 'draft', createdAt: new Date().toISOString(), canaryPassed: false, controllerId,
-    tasks: rows.map((row) => ({ id: newId(), line: row.line, name: row.name, floor: normalizeDecimal(row.floor), status: 'pending', reason: '', attempts: 0, logs: [] })),
+    tasks: rows.map((row) => ({ id: newId(), line: row.line, name: row.name, mode, floor: mode === 'manual' ? normalizeDecimal(row.floor) : '', status: 'pending', reason: '', attempts: 0, logs: [] })),
   };
 }
 
@@ -242,8 +247,9 @@ function csvCell(value: unknown): string {
 export function exportCsv(batch: Batch, filter: 'all' | 'success' | 'exceptions' = 'all'): string {
   const success = new Set<Status>(['success', 'exists']);
   const tasks = batch.tasks.filter((task) => filter === 'all' || (filter === 'success' ? success.has(task.status) : !success.has(task.status)));
-  const records: unknown[][] = [[ '原始行号', '发布商ID', '应用名称', 'App ID', '广告位名称', '广告格式', '请求底价模式', '请求底价USD', '实际底价模式', '实际底价', '实际币种', '广告位ID', '状态', '原因', '完成时间' ]];
-  for (const task of tasks) records.push([task.line, batch.identity.publisherId, batch.identity.appName, batch.identity.appId, task.name, FORMAT_ZH[batch.format], '手动设定底价', task.floor, task.actual?.mode, task.actual?.floor, task.actual?.currency, task.actual?.unitId, STATUS_ZH[task.status], task.reason, task.finishedAt]);
+  const records: unknown[][] = [[ '原始行号', '发布商ID', '应用名称', 'App ID', '广告位名称', '广告格式', '请求底价模式', '请求底价USD', '实际底价模式', '实际底价', '实际币种', '广告位ID', '状态', '原因', '完成时间', '批次ID', '批次开始时间', '批次结束时间', '批次总耗时' ]];
+  const timing = summarizeBatch(batch);
+  for (const task of tasks) records.push([task.line, batch.identity.publisherId, batch.identity.appName, batch.identity.appId, task.name, FORMAT_ZH[batch.format], MODE_ZH[batch.mode ?? 'manual'], task.floor, task.actual?.mode, task.actual?.floor, task.actual?.currency, task.actual?.unitId, STATUS_ZH[task.status], task.reason, task.finishedAt, batch.id, timing.startedAt, timing.completedAt, batchElapsed(timing)]);
   return `\uFEFF${records.map((row) => row.map(csvCell).join(',')).join('\r\n')}\r\n`;
 }
 

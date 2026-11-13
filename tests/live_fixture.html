@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>AdMob 实机结构脱敏夹具</title>
+<style>body{font:14px sans-serif} [hidden]{display:none!important}</style></head>
+<body>
+<nav id="sidebar"><span class="primary-label unlinked-primary-text">测试应用</span>
+  <material-list-item href="/v2/apps/2222222222/adunits/list" role="link" aria-label="“测试应用”中的广告单元" class="secondary-sidebar-item item selected">广告单元</material-list-item>
+  <material-list-item href="/v2/apps/2222222222/settings" role="link" aria-label="“测试应用”的应用设置" class="secondary-sidebar-item item">应用设置</material-list-item>
+</nav>
+<main id="app" role="main"></main>
+<script>
+(() => {
+  const APP = '2222222222';
+  const PUB = '1111111111111111';
+  const unit = (n) => 'ca-app-pub-' + PUB + '/' + String(3333333000 + n).slice(-10);
+  const units = [
+    { name: '既有插页', unitId: unit(1), format: 'interstitial', floor: '200.00', mode: 'manual' },
+    { name: '既有开屏', unitId: unit(2), format: 'app-open', floor: '15.00', mode: 'manual' },
+    { name: '目标名称', unitId: unit(3), format: 'interstitial', floor: '60.00', mode: 'manual' },
+  ];
+  const app = document.getElementById('app');
+  const state = { page: 'list', format: 'interstitial', clicks: [], created: [], currency: 'US$', maxName: 80 };
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const fmt = (f) => f === 'interstitial' ? '插页式广告' : f === 'native' ? '原生高级广告' : '开屏广告';
+
+  function pageHeader() {
+    return '<div class="app-card"><span class="primary-label unlinked-primary-text">测试应用</span><span>免费</span><span>Android</span></div>';
+  }
+  function renderList() {
+    state.page = 'list';
+    app.innerHTML = '<h1>广告单元</h1>' + pageHeader() +
+      '<div class="toolbar"><input aria-label="按广告单元名称、广告单元 ID 和广告格式搜索广告单元" class="search" value=""></div>' +
+      '<div class="ess-table-constraint"><div class="ess-table-wrapper"><div class="ess-table-canvas" role="grid" aria-label="广告单元">' +
+      '<div class="particle-table-row particle-table-header" role="row">' +
+      '<div role="columnheader" class="particle-table-header-cell" aria-label="广告单元" essfield="ad-unit-with-id-info">广告单元</div>' +
+      '<div role="columnheader" class="particle-table-header-cell" aria-label="广告格式" essfield="ad-unit-format">广告格式</div></div>' +
+      units.map((u) => '<div class="particle-table-row" role="row">' +
+        '<ess-cell role="gridcell" class="resizable" essfield="ad-unit-with-id-info"><ad-unit-with-id-cell><a class="u-primary-text u-clickable-link admob-link" role="link" href="/v2/apps/' + APP + '/adunits/' + u.unitId.split('/')[1] + '/edit">' + esc(u.name) + '</a>' +
+        '<div class="ad-unit-id-container"><div class="u-secondary-text">' + u.unitId + '</div></div></ad-unit-with-id-cell></ess-cell>' +
+        '<ess-cell role="gridcell" class="resizable" essfield="ad-unit-format">' + fmt(u.format) + '</ess-cell></div>').join('') +
+      '</div></div><div class="table-footer">第 1 - ' + units.length + ' 行，共 ' + units.length + ' 行</div>' +
+      '<material-button class="first" aria-label="转到首页" aria-disabled="true" role="button">first</material-button>' +
+      '<material-button class="prev" aria-label="转到上一页" aria-disabled="true" role="button">prev</material-button>' +
+      '<material-button class="next" aria-label="转到下一页" aria-disabled="true" role="button">next</material-button>' +
+      '<material-button class="last" aria-label="转到末页" aria-disabled="true" role="button">last</material-button></div>' +
+      '<material-button class="add-ad-unit-button" aria-label="添加广告单元" role="button">添加广告单元</material-button>';
+    app.querySelector('.add-ad-unit-button').onclick = renderFormats;
+    for (const a of app.querySelectorAll('a[href*="/adunits/"]')) {
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        const id = a.getAttribute('href').split('/').slice(-2)[0];
+        const u = units.find((x) => x.unitId.endsWith('/' + id));
+        history.pushState({}, '', a.getAttribute('href'));
+        renderDetail(u);
+      });
+    }
+  }
+  function renderFormats() {
+    state.page = 'formats';
+    app.innerHTML = '<h1>选择广告格式</h1>' + pageHeader() + '<div class="formats">' +
+      [['interstitial', '插页式广告'], ['app-open', '开屏广告'], ['native', '原生高级广告'], ['rewarded-interstitial', '插页式激励广告']].map(([f, label]) =>
+        '<section class="ad-format-card"><div class="header"><span>' + label + '</span></div>' +
+        '<material-button class="select-button" role="button" aria-label="' + label + '">选择</material-button></section>').join('') + '</div>';
+    for (const b of app.querySelectorAll('.select-button')) {
+      b.onclick = () => {
+        const label = b.getAttribute('aria-label');
+        state.format = label === '开屏广告' ? 'app-open' : label === '原生高级广告' ? 'native' : 'interstitial';
+        renderForm(state.format);
+      };
+    }
+  }
+  function renderForm(format) {
+    state.page = 'form';
+    state.format = format;
+    app.innerHTML = '<h1>创建广告单元</h1>' + pageHeader() +
+      '<material-input><label class="input-container"><div class="label"><span class="label-text" id="name-label">输入广告单元名称</span></div>' +
+      '<input class="input input-area" type="text" aria-labelledby="name-label" aria-invalid="false"></label></material-input>' +
+      '<div class="counter-container"><div class="counter">0/' + state.maxName + '</div></div>' +
+      '<div class="format-row"><span>广告格式</span><div class="format-label">' + fmt(format) + '</div></div>' +
+      '<a class="advanced-settings-toggle" role="button" aria-expanded="false"><span class="title">高级设置</span></a>' +
+      '<div class="advanced" hidden>' +
+      '<material-radio role="radio" aria-checked="true" tabindex="0">由 Google 优化</material-radio>' +
+      '<material-radio role="radio" aria-checked="false" tabindex="0">人工指定底价</material-radio>' +
+      '<material-radio role="radio" aria-checked="false" tabindex="0">已停用</material-radio>' +
+      '<manual-ecpm-floor-input hidden><div class="u-secondary-text global-ecpm-input-label" id="floor-label">输入全球有效每千次展示费用底价</div>' +
+      '<material-input type="money64"><span class="leading-text">' + esc(state.currency) + '</span><label class="input-container"><input type="text" inputmode="numeric" aria-labelledby="floor-label" aria-invalid="false"></label></material-input></manual-ecpm-floor-input>' +
+      '</div><material-button class="btn btn-yes is-disabled" aria-disabled="true" role="button">创建广告单元</material-button>';
+    const name = app.querySelector('input[type="text"]');
+    const floorWrap = app.querySelector('manual-ecpm-floor-input');
+    const floor = floorWrap.querySelector('input');
+    const counter = app.querySelector('.counter');
+    const create = app.querySelector('.btn-yes');
+    const manual = [...app.querySelectorAll('[role="radio"]')].find((r) => r.textContent.includes('人工指定底价'));
+    const advanced = app.querySelector('.advanced-settings-toggle');
+    const advancedBody = app.querySelector('.advanced');
+    const refresh = () => {
+      counter.textContent = name.value.length + '/' + state.maxName;
+      const isManual = manual.getAttribute('aria-checked') === 'true';
+      create.setAttribute('aria-disabled', String(!(name.value.trim() && (!isManual || (floor.value && floor.getAttribute('aria-invalid') !== 'true')))));
+      create.classList.toggle('is-disabled', create.getAttribute('aria-disabled') === 'true');
+    };
+    for (const input of [name, floor]) input.addEventListener('input', refresh);
+    advanced.addEventListener('click', () => {
+      advanced.setAttribute('aria-expanded', 'true');
+      advancedBody.hidden = false;
+    });
+    for (const radio of app.querySelectorAll('[role="radio"]')) radio.addEventListener('click', () => {
+      for (const r of app.querySelectorAll('[role="radio"]')) r.setAttribute('aria-checked', String(r === radio));
+      floorWrap.hidden = radio !== manual;
+      refresh();
+    });
+    create.addEventListener('click', () => {
+      if (create.getAttribute('aria-disabled') === 'true') return;
+      state.clicks.push({ name: name.value, floor: floor.value, format: state.format });
+      const selected = app.querySelector('[role="radio"][aria-checked="true"]').textContent;
+      const mode = selected.includes('人工') ? 'manual' : selected.includes('停用') ? 'disabled' : 'auto';
+      const u = { name: name.value, unitId: unit(9), format: state.format, floor: mode === 'manual' ? floor.value : '', mode };
+      units.push(u);
+      history.pushState({}, '', '/v2/apps/' + APP + '/adunits/' + u.unitId.split('/')[1] + '/edit');
+      renderDetail(u);
+    });
+    refresh();
+  }
+  function renderDetail(u) {
+    state.page = 'detail';
+    app.innerHTML = '<h1>修改广告单元</h1>' + pageHeader() +
+      '<div class="header" aria-label="广告单元名称" aria-describedby="v-name"><div class="panel-name"><span class="collapsed-title">广告单元名称</span></div><div class="panel-description" id="v-name">' + esc(u.name) + '</div></div>' +
+      '<div class="header" aria-label="广告格式" aria-describedby="v-format"><div class="panel-name">广告格式</div><div class="panel-description" id="v-format">' + fmt(u.format) + '</div></div>' +
+      '<div class="header" aria-label="广告单元 ID" aria-describedby="v-id"><div class="panel-name">广告单元 ID</div><div class="panel-description" id="v-id">' + u.unitId + '</div></div>' +
+      '<div class="header" aria-label="有效每千次展示费用底价" aria-describedby="v-floor"><div class="panel-name">有效每千次展示费用底价</div><div class="panel-description" id="v-floor">' + (u.mode === 'auto' ? '由 Google 优化' : u.mode === 'disabled' ? '已停用' : '全球底价设为 $' + esc(u.floor)) + '</div></div>' +
+      '<material-list-item href="/v2/apps/' + APP + '/adunits/list" role="link" aria-label="“测试应用”中的广告单元" class="secondary-sidebar-item item">广告单元</material-list-item>';
+    const link = app.querySelector('material-list-item[href$="/adunits/list"]');
+    link.addEventListener('click', (e) => { e.preventDefault(); history.pushState({}, '', '/v2/apps/' + APP + '/adunits/list'); renderList(); });
+  }
+  addEventListener('popstate', () => {
+    if (location.pathname.endsWith('/adunits/list')) renderList();
+  });
+  const sidebarList = document.querySelector('#sidebar material-list-item[href$="/adunits/list"]');
+  sidebarList.addEventListener('click', (e) => { e.preventDefault(); history.pushState({}, '', '/v2/apps/' + APP + '/adunits/list'); renderList(); });
+  renderList();
+  window.fixture = { state, units, renderList, renderFormats, renderForm, renderDetail };
+})();
+</script>
+</body></html>

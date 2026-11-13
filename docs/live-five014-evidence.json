@@ -1,0 +1,282 @@
+{
+  "version": "0.4.14",
+  "batchId": "c5c7f15b-02cf-4b22-94ae-3e8d50030498",
+  "format": "interstitial",
+  "publisherId": "pub-3009710883544946",
+  "appId": "ca-app-pub-3009710883544946~8582860308",
+  "outcome": "5/5 automatically created and verified after saving",
+  "execution": {
+    "pages": 5,
+    "oneStartInRunnerSource": true,
+    "manualSubmitClicks": 0,
+    "manualIdEntries": 0,
+    "manualRetries": 0,
+    "canary": "Previously successful matching sample independently reverified by ID before dispatch; a first-ever batch still gates on its first row.",
+    "originalRunnerReturnArchived": false,
+    "metricsSource": "Persisted controller state-transition log, read after completion; no reconstructed original polling samples or exact start-click timestamp.",
+    "peakActiveFromStateLog": 5,
+    "firstDispatchUtc": "2026-11-13T12:36:21.350Z",
+    "lastSuccessUtc": "2026-11-13T12:36:52.312Z",
+    "dispatchToLastSuccessSeconds": 30.962,
+    "fiveActiveOverlapStartUtc": "2026-11-13T12:36:24.042Z",
+    "fiveActiveOverlapEndUtc": "2026-11-13T12:36:52.023Z",
+    "fiveActiveOverlapSeconds": 27.981
+  },
+  "receipts": [
+    {
+      "sourceRow": 2,
+      "name": "admob_int_c5_20261113123535_m15c_1",
+      "requestedUsd": "600",
+      "actualDisplay": "600 USD",
+      "status": "成功",
+      "adUnitId": "ca-app-pub-3009710883544946/7851261709",
+      "reason": "保存后配置核验一致"
+    },
+    {
+      "sourceRow": 3,
+      "name": "admob_int_c5_20261113123535_m15c_2",
+      "requestedUsd": "700",
+      "actualDisplay": "700 USD",
+      "status": "成功",
+      "adUnitId": "ca-app-pub-3009710883544946/6881135827",
+      "reason": "保存后配置核验一致"
+    },
+    {
+      "sourceRow": 4,
+      "name": "admob_int_c5_20261113123535_m15c_3",
+      "requestedUsd": "800",
+      "actualDisplay": "800 USD",
+      "status": "成功",
+      "adUnitId": "ca-app-pub-3009710883544946/4254972486",
+      "reason": "保存后配置核验一致"
+    },
+    {
+      "sourceRow": 5,
+      "name": "admob_int_c5_20261113123535_m15c_4",
+      "requestedUsd": "900",
+      "actualDisplay": "900 USD",
+      "status": "成功",
+      "adUnitId": "ca-app-pub-3009710883544946/1034571918",
+      "reason": "保存后配置核验一致"
+    },
+    {
+      "sourceRow": 6,
+      "name": "admob_int_c5_20261113123535_m15c_5",
+      "requestedUsd": "1000",
+      "actualDisplay": "1000 USD",
+      "status": "成功",
+      "adUnitId": "ca-app-pub-3009710883544946/8721490242",
+      "reason": "保存后配置核验一致"
+    }
+  ],
+  "export": {
+    "filename": "AdMob-c5c7f15b-02cf-4b22-94ae-3e8d50030498-all.csv",
+    "sha256": "0163b9b8a9b10c82f6f4fc600002010aa361ed900c2d9b3015cc6f746a337657",
+    "allRows": 5,
+    "successRows": 5,
+    "exceptionsRows": 0
+  },
+  "finalArtifact": {
+    "version": "0.4.14",
+    "bytes": 151591,
+    "sha256": "daf151d4bedf1015234ff7c1e3773eadbf82a2caa9f82b0542626652b2df8612",
+    "postRunChanges": "Two informational messages updated after the successful run; no execution logic changed.",
+    "officialReinstallVerified": true,
+    "postInstallControllerReloadStillFiveSuccess": true
+  },
+  "afterCompletion": {
+    "workerPagesClosed": 5,
+    "persistedAfterControllerReload": true,
+    "extraPreflight": "A subsequent new draft stopped at preflight with no start and no submission. It does not change these completed results."
+  },
+  "workerStatuses": [
+    "AdMob 批量执行页：保存后配置核验一致",
+    "AdMob 批量执行页：保存后配置核验一致",
+    "AdMob 批量执行页：保存后配置核验一致",
+    "AdMob 批量执行页：保存后配置核验一致",
+    "AdMob 批量执行页：保存后配置核验一致"
+  ],
+  "transitions": [
+    {
+      "atUtc": "2026-11-13T12:35:37.693Z",
+      "sourceRow": 2,
+      "name": "admob_int_c5_20261113123535_m15c_1",
+      "status": "待执行"
+    },
+    {
+      "atUtc": "2026-11-13T12:35:37.693Z",
+      "sourceRow": 3,
+      "name": "admob_int_c5_20261113123535_m15c_2",
+      "status": "待执行"
+    },
+    {
+      "atUtc": "2026-11-13T12:35:37.693Z",
+      "sourceRow": 4,
+      "name": "admob_int_c5_20261113123535_m15c_3",
+      "status": "待执行"
+    },
+    {
+      "atUtc": "2026-11-13T12:35:37.693Z",
+      "sourceRow": 5,
+      "name": "admob_int_c5_20261113123535_m15c_4",
+      "status": "待执行"
+    },
+    {
+      "atUtc": "2026-11-13T12:35:37.693Z",
+      "sourceRow": 6,
+      "name": "admob_int_c5_20261113123535_m15c_5",
+      "status": "待执行"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:21.350Z",
+      "sourceRow": 2,
+      "name": "admob_int_c5_20261113123535_m15c_1",
+      "status": "填表中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:21.437Z",
+      "sourceRow": 3,
+      "name": "admob_int_c5_20261113123535_m15c_2",
+      "status": "填表中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:22.389Z",
+      "sourceRow": 4,
+      "name": "admob_int_c5_20261113123535_m15c_3",
+      "status": "填表中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:23.977Z",
+      "sourceRow": 5,
+      "name": "admob_int_c5_20261113123535_m15c_4",
+      "status": "填表中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:24.042Z",
+      "sourceRow": 6,
+      "name": "admob_int_c5_20261113123535_m15c_5",
+      "status": "填表中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:25.511Z",
+      "sourceRow": 2,
+      "name": "admob_int_c5_20261113123535_m15c_1",
+      "status": "填表中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:26.344Z",
+      "sourceRow": 3,
+      "name": "admob_int_c5_20261113123535_m15c_2",
+      "status": "填表中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:26.731Z",
+      "sourceRow": 2,
+      "name": "admob_int_c5_20261113123535_m15c_1",
+      "status": "提交中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:29.579Z",
+      "sourceRow": 3,
+      "name": "admob_int_c5_20261113123535_m15c_2",
+      "status": "提交中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:29.588Z",
+      "sourceRow": 4,
+      "name": "admob_int_c5_20261113123535_m15c_3",
+      "status": "填表中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:29.591Z",
+      "sourceRow": 5,
+      "name": "admob_int_c5_20261113123535_m15c_4",
+      "status": "填表中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:29.594Z",
+      "sourceRow": 6,
+      "name": "admob_int_c5_20261113123535_m15c_5",
+      "status": "填表中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:29.598Z",
+      "sourceRow": 2,
+      "name": "admob_int_c5_20261113123535_m15c_1",
+      "status": "核验中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:29.867Z",
+      "sourceRow": 3,
+      "name": "admob_int_c5_20261113123535_m15c_2",
+      "status": "核验中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:32.213Z",
+      "sourceRow": 4,
+      "name": "admob_int_c5_20261113123535_m15c_3",
+      "status": "提交中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:34.756Z",
+      "sourceRow": 5,
+      "name": "admob_int_c5_20261113123535_m15c_4",
+      "status": "提交中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:38.055Z",
+      "sourceRow": 6,
+      "name": "admob_int_c5_20261113123535_m15c_5",
+      "status": "提交中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:38.121Z",
+      "sourceRow": 4,
+      "name": "admob_int_c5_20261113123535_m15c_3",
+      "status": "核验中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:38.124Z",
+      "sourceRow": 5,
+      "name": "admob_int_c5_20261113123535_m15c_4",
+      "status": "核验中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:39.805Z",
+      "sourceRow": 6,
+      "name": "admob_int_c5_20261113123535_m15c_5",
+      "status": "核验中"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:52.023Z",
+      "sourceRow": 2,
+      "name": "admob_int_c5_20261113123535_m15c_1",
+      "status": "成功"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:52.041Z",
+      "sourceRow": 3,
+      "name": "admob_int_c5_20261113123535_m15c_2",
+      "status": "成功"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:52.270Z",
+      "sourceRow": 4,
+      "name": "admob_int_c5_20261113123535_m15c_3",
+      "status": "成功"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:52.291Z",
+      "sourceRow": 5,
+      "name": "admob_int_c5_20261113123535_m15c_4",
+      "status": "成功"
+    },
+    {
+      "atUtc": "2026-11-13T12:36:52.312Z",
+      "sourceRow": 6,
+      "name": "admob_int_c5_20261113123535_m15c_5",
+      "status": "成功"
+    }
+  ],
+  "rawStateLog": "2026-11-13T12:35:37.693Z [2 admob_int_c5_20261113123535_m15c_1] 待执行 · 累计耗时 0.000 秒 / 本行上步间隔 0.000 秒 · AdMob 允许重名；预检不查询同名，创建后立即记录新广告位 ID\n2026-11-13T12:35:37.693Z [3 admob_int_c5_20261113123535_m15c_2] 待执行 · 累计耗时 0.000 秒 / 本行上步间隔 0.000 秒 · AdMob 允许重名；预检不查询同名，创建后立即记录新广告位 ID\n2026-11-13T12:35:37.693Z [4 admob_int_c5_20261113123535_m15c_3] 待执行 · 累计耗时 0.000 秒 / 本行上步间隔 0.000 秒 · AdMob 允许重名；预检不查询同名，创建后立即记录新广告位 ID\n2026-11-13T12:35:37.693Z [5 admob_int_c5_20261113123535_m15c_4] 待执行 · 累计耗时 0.000 秒 / 本行上步间隔 0.000 秒 · AdMob 允许重名；预检不查询同名，创建后立即记录新广告位 ID\n2026-11-13T12:35:37.693Z [6 admob_int_c5_20261113123535_m15c_5] 待执行 · 累计耗时 0.000 秒 / 本行上步间隔 0.000 秒 · AdMob 允许重名；预检不查询同名，创建后立即记录新广告位 ID\n2026-11-13T12:36:21.350Z [2 admob_int_c5_20261113123535_m15c_1] 填表中 · 累计耗时 43.657 秒 / 本行上步间隔 43.657 秒\n2026-11-13T12:36:21.437Z [3 admob_int_c5_20261113123535_m15c_2] 填表中 · 累计耗时 43.744 秒 / 本行上步间隔 43.744 秒\n2026-11-13T12:36:22.389Z [4 admob_int_c5_20261113123535_m15c_3] 填表中 · 累计耗时 44.696 秒 / 本行上步间隔 44.696 秒\n2026-11-13T12:36:23.977Z [5 admob_int_c5_20261113123535_m15c_4] 填表中 · 累计耗时 46.284 秒 / 本行上步间隔 46.284 秒\n2026-11-13T12:36:24.042Z [6 admob_int_c5_20261113123535_m15c_5] 填表中 · 累计耗时 46.349 秒 / 本行上步间隔 46.349 秒\n2026-11-13T12:36:25.511Z [2 admob_int_c5_20261113123535_m15c_1] 填表中 · 累计耗时 47.818 秒 / 本行上步间隔 4.161 秒 · 表单已读回，等待提交许可\n2026-11-13T12:36:26.344Z [3 admob_int_c5_20261113123535_m15c_2] 填表中 · 累计耗时 48.651 秒 / 本行上步间隔 4.907 秒 · 表单已读回，等待提交许可\n2026-11-13T12:36:26.731Z [2 admob_int_c5_20261113123535_m15c_1] 提交中 · 累计耗时 49.038 秒 / 本行上步间隔 1.220 秒 · 提交意图已持久化\n2026-11-13T12:36:29.579Z [3 admob_int_c5_20261113123535_m15c_2] 提交中 · 累计耗时 51.886 秒 / 本行上步间隔 3.235 秒 · 提交意图已持久化\n2026-11-13T12:36:29.588Z [4 admob_int_c5_20261113123535_m15c_3] 填表中 · 累计耗时 51.895 秒 / 本行上步间隔 7.199 秒 · 表单已读回，等待提交许可\n2026-11-13T12:36:29.591Z [5 admob_int_c5_20261113123535_m15c_4] 填表中 · 累计耗时 51.898 秒 / 本行上步间隔 5.614 秒 · 表单已读回，等待提交许可\n2026-11-13T12:36:29.594Z [6 admob_int_c5_20261113123535_m15c_5] 填表中 · 累计耗时 51.901 秒 / 本行上步间隔 5.552 秒 · 表单已读回，等待提交许可\n2026-11-13T12:36:29.598Z [2 admob_int_c5_20261113123535_m15c_1] 核验中 · 累计耗时 51.905 秒 / 本行上步间隔 2.867 秒\n2026-11-13T12:36:29.867Z [3 admob_int_c5_20261113123535_m15c_2] 核验中 · 累计耗时 52.174 秒 / 本行上步间隔 0.288 秒\n2026-11-13T12:36:32.213Z [4 admob_int_c5_20261113123535_m15c_3] 提交中 · 累计耗时 54.520 秒 / 本行上步间隔 2.625 秒 · 提交意图已持久化\n2026-11-13T12:36:34.756Z [5 admob_int_c5_20261113123535_m15c_4] 提交中 · 累计耗时 57.063 秒 / 本行上步间隔 5.165 秒 · 提交意图已持久化\n2026-11-13T12:36:38.055Z [6 admob_int_c5_20261113123535_m15c_5] 提交中 · 累计耗时 60.362 秒 / 本行上步间隔 8.461 秒 · 提交意图已持久化\n2026-11-13T12:36:38.121Z [4 admob_int_c5_20261113123535_m15c_3] 核验中 · 累计耗时 60.428 秒 / 本行上步间隔 5.908 秒\n2026-11-13T12:36:38.124Z [5 admob_int_c5_20261113123535_m15c_4] 核验中 · 累计耗时 60.431 秒 / 本行上步间隔 3.368 秒\n2026-11-13T12:36:39.805Z [6 admob_int_c5_20261113123535_m15c_5] 核验中 · 累计耗时 62.112 秒 / 本行上步间隔 1.750 秒\n2026-11-13T12:36:52.023Z [2 admob_int_c5_20261113123535_m15c_1] 成功 · 累计耗时 74.330 秒 / 本行上步间隔 22.425 秒 · 保存后配置核验一致\n2026-11-13T12:36:52.041Z [3 admob_int_c5_20261113123535_m15c_2] 成功 · 累计耗时 74.348 秒 / 本行上步间隔 22.174 秒 · 保存后配置核验一致\n2026-11-13T12:36:52.270Z [4 admob_int_c5_20261113123535_m15c_3] 成功 · 累计耗时 74.577 秒 / 本行上步间隔 14.149 秒 · 保存后配置核验一致\n2026-11-13T12:36:52.291Z [5 admob_int_c5_20261113123535_m15c_4] 成功 · 累计耗时 74.598 秒 / 本行上步间隔 14.167 秒 · 保存后配置核验一致\n2026-11-13T12:36:52.312Z [6 admob_int_c5_20261113123535_m15c_5] 成功 · 累计耗时 74.619 秒 / 本行上步间隔 12.507 秒 · 保存后配置核验一致"
+}

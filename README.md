@@ -1,67 +1,103 @@
 # AdMob Batch Creator
 
-面向中文 AdMob 后台的 Tampermonkey 用户脚本。构建产物是一个 `.user.js`；日常使用无需 Node.js、Python、服务端、OAuth 或 API Key。
+面向中文 AdMob 后台的 Tampermonkey 用户脚本。构建产物是一个 `.user.js`；日常使用不需要 Node.js、服务端、OAuth 或 API Key。
 
-**当前交付状态：已实现并构建的首版，真实 AdMob 页面尚未校准和验收。** 页面适配采用严格的语义候选；当前页面无法提供账号、应用、完整查重或保存配置证据时，会阻止创建。请勿把模拟测试通过理解为生产后台已经可用。首次真实使用应先完成下列文档中的只读检查，再使用用户确认的清单。开发过程中没有创建任何真实广告单元。
+GitHub 仓库：[Hawkiethehawk/admob-batch-creator](https://github.com/Hawkiethehawk/admob-batch-creator)。
+
+**当前工作根为 `C:\Users\Administrator\Desktop\AdMob-Batch-Creator-交付`。** `src`、`tests`、`docs`、`scripts`、`examples`、`dist` 和 `package.json` 均直接位于本目录；后续编辑、构建和检查从这里执行。旧 `C:\Users\Administrator\work\admob-batch-creator` 仅作为历史副本，不再编辑。交接入口为 [HANDOFF-AI-AGENT.md](HANDOFF-AI-AGENT.md)，真实导出保留在 [结果](结果/)。
+
+**当前本地交付版本：v0.5.0。** 插屏、开屏、信息流（原生广告）均可选择人工指定底价、由 Google 优化、已停用，默认人工；仅人工模式填写 USD 金额。清单粘贴/导入后立即可编辑，支持批量应用、替换或清除名称前缀。请求币种和独立解析/预检按钮已移除，点击开始自动检查账号、清单、锁与执行页。执行方式界面保留，等待后续讨论。
+
+“历史结果”按当前发布商和应用列出批次，可切换查看、导出和复制；不会替换当前任务。新批次记录开始、结束和完整总耗时，包含自动检查、等待及暂停，旧记录缺失时间显示未知。历史样本失效时改用本批首条核验。新功能的验证范围为本地测试与隔离 Chromium；尚未安装到原 HubVPS 或进行新增格式/模式的真实创建验收。
+
+**全新五条、一次开始、真实五任务并行、5/5 自动创建并完成保存后核验已通过。** 0.4.14 批次 `c5c7f15b-02cf-4b22-94ae-3e8d50030498` 使用全新名称和 600/700/800/900/1000 USD；运行期间没有人工提交、补录、重试或手动核验。五任务共同活动至少 27.981 秒，从最早填表到最后成功为 30.962 秒；此区间不含预检，不作完整运行总耗时。该次预检重新核验了历史成功样本并复用首条门控；无合格历史样本时仍先核验首条，再并发余项。完整 ID、CSV 和证据见 [验证记录](docs/VALIDATION.md)。
+
+历史 100～1000 共 10 个请求也已核验完成，其中 900 有人工协助；0.4.13 的另一新五条保留 4 成功、1 提交前失败记录。这些历史不并入本次全自动 5/5。
+
+现场为原 HubVPS Chromium 126.0.6478.60（32 位）、Tampermonkey 5.5.1，通过 Playwright 控制原登录会话。本次由 Playwright 按面板链接开五页，并轮流切到前台避免后台节流；默认自动开页、全部长期后台或最小化不属于此实测。面板支持 1～5 个执行页、默认 5；提交遵守账号级至少 2.5 秒间隔。开屏等限制见 [页面适配限制](docs/adapter-limitations.md)。
+
+## 现场校准依据
+
+适配器不再是未校准的通用语义候选。以下结构来自现场页面：
+
+- 广告单元列表是 `div.ess-table-canvas[role="grid"][aria-label="广告单元"]`，行是 `div.particle-table-row[role="row"]`，单元格使用 `ess-cell[essfield="ad-unit-with-id-info"|"ad-unit-format"]`，没有 `<table>`。
+- 分页文本为“第 1 - 15 行，共 48 行”，按钮 aria-label 为“转到上一页/下一页/末页”；“转到首页”实际是站点面包屑，不能当作表格第一页。列表存在虚拟化/部分渲染，适配器改为先清空搜索、按当前行名称筛选，再读取筛选后的总数和匹配行。
+- 应用名称来自侧栏 `material-list-item.selected` 的显式 aria-label 或 `span.primary-label`；发布商 ID 从当前应用广告位 ID 的 `ca-app-pub-<publisher>/...` 前缀核对；App ID 使用当前 `/v2/apps/<数字>/` 路由与该前缀组合，并与应用设置页的 `ca-app-pub-...~...` 交叉核对。
+- 创建格式卡为 `section.ad-format-card`；“插页式广告”和“插页式激励广告”是不同格式，后者被精确排除。
+- 手动底价的真实选项是“人工指定底价”（不是“手动设定底价”），默认是“由 Google 优化”；脚本主动选择人工底价，不会回退。
+- 人工底价控件是 `manual-ecpm-floor-input`，标签“输入全球有效每千次展示费用底价”，现场前缀为 `US$`。按已确定的逐行金额自动填写和读回，不再要求用户额外确认底价。
+- 已有广告位详情/编辑页字段按关联标签读取；保存后“全球底价设为 $…”按已确定的整批 USD 解析。不为恢复 US$ 会话证据额外打开创建表单；页面明确显示非 USD 或金额、模式不一致时停止并报告。
+- 保存摘要和真实 `manual-ecpm-floor-input` 内的原生 input 显示值允许规范三位千分位分组，如 `$1,000.00`、`1,000.00`；按完整金额进行精确比较，畸形分组或金额变化仍阻断。普通控件、textarea 和用户导入金额不放宽。
+- 成功说明页可能仍保留“创建广告单元”标题，却只显示 `.instructions` 结果区；0.4.6 从成功结果区捕获真实新 ID 并持久化，再按该 ID 打开保存详情核验，不因旧标题把成功页当成可提交表单，也不重复点击创建。
+- 真实 Tampermonkey 面板已在现场出现，并识别出 `pub-3009710883544946` / `Simple Homescreen` / `ca-app-pub-3009710883544946~8582860308`。真实预检/创建暴露并修复了 SPA 返回、创建页后台 grid 误判、搜索虚拟化、人工底价组件挂载顺序和保存后编辑页回读问题。
+- 历史 v0.3.4 测试广告位：`OMP_TEST_INT_20261113_1`（`ca-app-pub-3009710883544946/2833603276`，60 USD）和 `OMP_TEST_INT_20261113_2`（`ca-app-pub-3009710883544946/8535542009`，60.5 USD），格式均为插页式；历史成功 CSV 已核对。这两条不计入当前五行批次。
+- 首批 100～500 在 0.4.7 单页完成并核验；第 3～5 条自动完成成功说明 ID 捕获、持久化和保存后核验。第 2 条依据真实说明恢复已知 ID 后核验，不作为自动缺 ID 恢复验收。旧版本问题与处理见 [变更记录](CHANGELOG.md)。
 
 ## 安装与使用
 
-- 在线安装：[AdMob Batch Creator 用户脚本](https://raw.githubusercontent.com/Hawkiethehawk/admob-batch-creator/main/dist/admob-batch-creator.user.js)
-- [下载完整交付包](https://github.com/Hawkiethehawk/admob-batch-creator/raw/refs/heads/main/dist/admob-batch-creator.zip)（源码、示例、说明与测试记录）
 - 安装文件：[`dist/admob-batch-creator.user.js`](dist/admob-batch-creator.user.js)
-- [Chrome、Edge 安装和 HubVPS 待验证说明](docs/INSTALL.md)
-- [清单、创建、并发、暂停恢复和导出](docs/USAGE.md)
+- [HubVPS、Chrome、Edge 安装说明](docs/INSTALL.md)
+- [清单、底价模式、创建、并发、历史和导出](docs/USAGE.md)
 - [真实页面适配限制](docs/adapter-limitations.md)
 - [验证记录与剩余验收](docs/VALIDATION.md)
 - [两列插页式示例](examples/interstitial.csv)、[两列开屏示例](examples/app-open.csv)
 
-本次构建通过类型检查、61 项逻辑/DOM/恢复测试；Chrome `157.0.8103.39`、Edge `156.0.4314.58` 的本机模拟流程结果见验证记录。真实扩展安装、后台页面和 HubVPS 仍待验收。
-
-脚本只匹配 `https://apps.admob.com/*`。复用脚本所在浏览器配置的现有登录；不会读取 Cookie、调用私有接口、修改付款币种或跨浏览器打开执行页。只支持广告单元全局手动 USD 底价。插页式与开屏分批选择，各行保留自己的价格。
+脚本匹配 `https://admob.google.com/*` 与 `https://apps.admob.com/*`。复用脚本所在浏览器配置的现有登录；不读取 Cookie、不调用私有接口、不修改付款币种或跨浏览器打开执行页。人工模式只设置广告单元全局 USD 底价。
 
 ## 已实现的执行边界
 
 1. 以显式发布商 ID 和 AdMob App ID 固定批次；每次领取、关键步骤及提交前再次核对。页面不明确时停止。
-2. 预检与逐条执行前都完整检查已有广告单元。分页、筛选或配置无法确认时，标记待核验；同名不自动改名或覆盖。
-3. 首条真实创建并核验通过后，固定执行页池才扩到指定并发 1～3。主控独占账号锁，每个执行页另有锁，GM 存储不充当原子锁。多页模式先用当前用户脚本环境进行跨页锁冲突、通知与身份握手。
+2. AdMob 允许重名：每行都是独立创建请求，新批次预检不查询同名或统计同名数量。提交后立即持久化新广告位 ID；保存后按该 ID 打开详情核验，不靠名称猜测同名单元。已有提交意图或已知 ID 的行不能重新创建。
+3. 点击开始后自动预热独立执行页，并可按 ID 重新复核上一已结束批次的同发布商、同应用、同格式、同底价模式成功样本。全字段一致才复用首条门控，允许新清单按所选 1～5 并发；样本缺失、被删除或核验失败时，重新核对身份后改用本批首条核验。每条仍须取得新 ID 并独立保存后核验。主控与每页均有真实锁。
 4. 主控是唯一派发者。独立执行页信箱、稳定任务/分配标识、持久化 journal 和 ACK 防止重复消息变成重复提交。账号级提交许可至少间隔 2.5 秒，许可 10 秒过期。
 5. 点击创建前，主控先回读持久化提交意图，执行页再写本地 journal。存在提交意图后，不会自动回到待执行；超时 120 秒暂停派发并保留原归属。
-6. 真正成功需要广告单元 `/` ID、应用、名称、格式、手动模式、金额和 USD 的保存后证据。仅拿到 ID 时保留 ID 并标为配置待核验。`~` App ID 不会当作广告位 ID。
-7. 暂停和停止均保留提交后观察；降级单页保留旧执行页。停止意图在刷新后仍生效；未确认开始的草稿不能通过“继续”绕过整批确认。仅预检不完整且从未提交的记录不会使取消草稿永久卡住。
-8. CSV 包含中文 BOM、原行、账号/应用、请求/实际配置、ID、状态、原因和时间，并防止 Excel 公式注入。脱敏诊断仅导出允许的控件标签/属性和能力统计，不导出任意正文、HTML、输入值或凭证。
+6. 成功需要广告单元 `/` ID、应用、名称、格式和所选底价模式的保存后读回一致；人工模式还需金额和 USD 一致，页面明确冲突时报告。仅拿到 ID 时保留 ID 并标为配置待核验。`~` App ID 不会当作广告位 ID。
+7. 暂停和停止会停止后续派发并保留结果证据；降级单页保留旧执行页。继续前检查身份与锁，存在待核验项时禁用“继续”。在途刷新、worker 身份恢复以及许可检查到点击间的暂停/停止有已确认源码边界，不能据正常路径宣称完整中断恢复通过，详见适配限制。
+8. 刷新后，只有旧单页实例的不确定项具有完整匹配的填表 journal、无提交意图、无实际结果且无提交许可，才转为明确失败供用户重试；多页和证据缺失不适用。页面等待和休眠计时器在同一页面窗口创建与清理。
+9. CSV 包含中文 BOM、原行、账号/应用、请求/实际配置、ID、状态、原因和时间，并防止 Excel 公式注入。
+
+0.4.9 暂停批次中已有提交意图、尚无 ID 的待核验行，可录入真实成功说明里已观察到的 ID，点击“记录 ID 并核验”。先持久化为未核验，再按原核验流程读取保存详情；该操作不提交、不直接标成功，也不覆盖不同的已知 ID。执行页在 ACK 或报告通信失败后，也会尝试从当前精确匹配的成功说明保留 ID，避免已创建结果因通信异常而丢失。
+
+已知 ID 搜索会等待该精确行最多 20 秒，旧行和旧“共 0 行”不能提前证明缺失。已有 ID 在主控看不到时，确认执行页已结束、报告收齐后，暂停并普通刷新主控恢复缓存，再按 ID 核验，绝不重新提交。在途刷新不属于这项已验证路径。
+
+## 大清单与多页接入
+
+0.4.8 新批次预检先完成所有行的同步校验与日志，再整批持久化一次，避免为每一行重复写入全部清单。执行期间的完整批次、提交意图和结果仍按原规则持久化；`latest` 指针只在批次 ID 变化时写入。
+
+跨页命令只包含本次分配的单个任务，以及批次 ID、身份、格式、主控 ID 和阶段，不再复制整批任务和日志。1000 行固定测试夹具中，同一派发命令从 **240,024 字节降到 810 字节**；该数字表示本地命令序列化大小，不代表真实创建速度或并发吞吐。
+
+探测期间面板显示“打开执行页”链接。可在同一浏览器配置内打开，也可由 Playwright 在原 HubVPS 的同一 context 中 `newPage().goto(link.href)`；链接只接受合法 AdMob HTTPS 地址和执行页标识，探测结束后清除。自动化宿主可用 `data-manual-tabs` 跳过 `GM_openInTab`，页面仍须完成既有 Web Locks、GM hello、通知与身份检查，再由原主控调度。不会另建一套提交队列。真实多页和五并发验收结果以 [验证记录](docs/VALIDATION.md) 为准。
+
+0.4.9 在提交前预热独立执行页，减少运行时冷开页、探测占用调度时间；暂停批次没有待核验结果时，只预热未派发 pending 行需要的页数，上限为所选并发。GM 报告通知立即触发收集和 ACK，仍保留恢复轮询，避免仅依赖可能被后台节流的计时器。
 
 ## 本地构建
 
-开发环境实测 Node.js 24.17.0、npm 12.2.0。使用仓库内锁文件：
+0.5.0 完整检查通过 **194/194 项测试、类型检查、构建及语法检查**，输出见 [`docs/test-results.txt`](docs/test-results.txt)，隔离浏览器结果见 [`tests/browser-results-0.5.0.json`](tests/browser-results-0.5.0.json)。0.4.14 的 154/154 项原始输出保留在 [`docs/test-results-0.4.14.txt`](docs/test-results-0.4.14.txt)。完整批次、提交意图和结果仍持久化，`latest` 按需写入。本地测试、隔离基准和真实验收分别记录。
+
+0.5.0 本地检查使用 Node.js 26.13.1；历史开发环境为 24.17.0。使用项目内锁文件：
 
 ```text
 npm ci
 npm run typecheck
 npm test
 npm run build
-npm run test:browser
 ```
 
-`npm run build` 使用 esbuild 将 TypeScript 打包成单一脚本，不包含远程 `@require`。浏览器测试使用隔离、无头的新配置和本机模拟站点；不会读取用户现有浏览器登录。测试机需安装 Chrome / Edge，默认路径见 `tests/browser.mjs`；测试结束关闭测试 context 和本机服务。
+Windows PowerShell 若因执行策略拒绝 `npm.ps1`，使用对应的 `npm.cmd` 命令即可。
 
-Windows 测试会从当前用户及系统标准安装目录查找浏览器。也可用 `ADMOB_CHROME_PATH`、`ADMOB_EDGE_PATH` 环境变量指定可执行文件，不需要修改测试源码。
+`npm run build` 使用 esbuild 将 TypeScript 打包成单一脚本，不包含远程 `@require`。`npm run test:browser` 使用脱敏页面夹具、模拟 GM 和本机后端，验证九种格式/底价组合、历史导出、跨页锁与单/多页执行；不会访问真实 AdMob。结果默认写入 `tests/browser-results-0.5.0.json`，不覆盖旧基准。
 
-可用 `node scripts/verify.mjs` 一次执行类型、逻辑测试、构建和语法检查并写入验证记录。打包使用 `scripts/package.ps1`，将源码、文档、示例及安装文件保存到 `dist/admob-batch-creator.zip`；脚本同时生成 SHA-256 清单，并核对 ZIP 内的安装文件哈希。
+`node scripts/verify.mjs` 执行类型检查、逻辑测试、构建和语法检查并写入 `docs/test-results.txt`。当前 `dist` 保留安装脚本及其 `SHA256SUMS.txt`；旧 ZIP、顶层重复清单和交付说明已归档到 `C:\Users\Administrator\work\admob-workspace-archive-20261113-211044`。需要重新分发时，在本工作根按需运行 `powershell -ExecutionPolicy Bypass -File scripts/package.ps1`，生成项目 ZIP 与 SHA-256 清单；脚本递归包含测试夹具，校验版本、ZIP 内文件路径和安装文件哈希。ZIP 自身哈希只写外部清单，不写入 ZIP 内。
 
 ## 代码结构
 
 | 文件 | 作用 |
 | --- | --- |
 | `src/core.ts` | CSV/TSV、十进制金额、查重分类、状态机、导出 |
-| `src/panel.ts` | 中文 Shadow DOM 面板、两列编辑、操作门槛 |
-| `src/adapter.ts` | 显式身份、语义 DOM、表单及保存后核验、诊断 |
+| `src/panel.ts` | 中文 Shadow DOM 面板、即时编辑、前缀、历史与操作门槛 |
+| `src/history.ts` | 批次摘要和完整流程计时，兼容缺失时间的旧记录 |
+| `src/adapter.ts` | 现场校准的身份、grid 列表、格式卡、人工底价、只读详情与保存后核验 |
 | `src/gm.ts`、`src/protocol.ts` | GM 存储、真实锁、信箱协议、归属判断 |
 | `src/controller.ts` | 唯一派发、首条验证、池、节流、暂停与恢复 |
 | `src/worker.ts` | 一次一条执行、提交意图、持久化 journal、结果回报 |
 | `src/main.ts` | 角色恢复、避免 iframe 和重复面板注入 |
-
-## 核验依据
-
-官方中文流程确认插页式与开屏都有手动底价及可选国家底价，本项目只处理全局底价；这些资料不能证明当前后台 DOM 已适配。[插页式说明](https://support.google.com/admob/answer/7311435?hl=zh-Hans)、[开屏说明](https://support.google.com/admob/answer/9620632?hl=zh-Hans)。
-
-名称默认上限 80 字符参考官方 `displayName` 定义，提交前仍读取真实表单限制；仅参考其字段定义，没有调用 AdMob API。[广告单元字段定义](https://developers.google.com/admob/api/reference/rest/v1/accounts.adUnits/list#AdUnit)。GM 权限与标签页能力依据 [Tampermonkey 官方文档](https://www.tampermonkey.net/documentation.php?locale=en)，安装执行许可依据 [官方 Q209](https://www.tampermonkey.net/faq.php?locale=en&q=Q209)。

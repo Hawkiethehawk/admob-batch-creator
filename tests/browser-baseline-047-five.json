@@ -1,0 +1,76 @@
+{
+  "at": "2026-11-13T10:58:57.786Z",
+  "scope": "Isolated headless Chromium; real pages, Web Locks, native storage notifications; simulated GM and delayed loopback backend. Not HubVPS/Tampermonkey or real AdMob acceptance.",
+  "script": {
+    "version": "0.4.7",
+    "bytes": 142128,
+    "sha256": "c3fdb9eac5aafe7171ed1c5ea2e32e969715f4070dfb2306a759d93b2fa325f6"
+  },
+  "workload": {
+    "rows": 10,
+    "saveDelayMs": 8000,
+    "throttleMs": 2500
+  },
+  "cases": [
+    {
+      "name": "concurrency-5",
+      "pass": true,
+      "concurrency": 5,
+      "rows": 10,
+      "preflightMs": 4926,
+      "preflightWorkers": 1,
+      "elapsedMs": 64134,
+      "rowsPerMinute": 9.355412105903264,
+      "workerTabsOpened": 5,
+      "peakPages": 6,
+      "peakWorkers": 5,
+      "peakActiveAssignments": 5,
+      "peakHeapBytes": 13547484,
+      "peakDomNodes": 20139,
+      "peakInflightSaves": 3,
+      "tasksPerWorker": [
+        3,
+        2,
+        2,
+        2,
+        1
+      ],
+      "grantIntervalsMs": {
+        "min": 2880,
+        "median": 3010,
+        "max": 19684
+      },
+      "submitIntervalsMs": {
+        "min": 2020,
+        "median": 3127,
+        "max": 18843
+      },
+      "remoteNotifications": 75,
+      "gmWrites": 378,
+      "gmWriteBytes": 2184822,
+      "storage": {
+        "entries": 26,
+        "bytes": 127898,
+        "gmEntries": 24
+      },
+      "assertions": [
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "verified-canary-before-expansion",
+        "pool-reuse-and-cap",
+        "global-throttle",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    }
+  ],
+  "measurements": {
+    "heap": "Sum of page CDP JSHeapUsedSize, sampled every 2 seconds; excludes native browser memory",
+    "serializedBytes": "Logical UTF-16 bytes (2 * string length), not disk usage"
+  },
+  "browser": {
+    "name": "Chromium",
+    "version": "158.0.8127.18",
+    "profile": "temporary isolated Playwright context"
+  }
+}

@@ -22,9 +22,15 @@ export function listen(key:string, callback:()=>void):()=>void {
   return () => GM_removeValueChangeListener(id);
 }
 export async function tabState():Promise<Record<string,unknown>> {
-  return new Promise((resolve,reject)=>{
-    const timer=setTimeout(()=>reject(new Error('GM_getTab 不可用，无法可靠识别执行标签页')),5000);
-    GM_getTab(tab=>{clearTimeout(timer);resolve(tab || {});});
+  // GM_getTab is not exposed by every Tampermonkey build/sandbox. It is only
+  // used to persist a tab id; the worker marker in the URL is authoritative,
+  // so a missing or slow API must not abort the panel.
+  if (typeof GM_getTab !== 'function') return {};
+  return new Promise(resolve=>{
+    let settled=false;
+    const finish=(tab?:Record<string,unknown>)=>{if(settled)return;settled=true;clearTimeout(timer);resolve(tab || {});};
+    const timer=setTimeout(()=>finish({}),2000);
+    try{GM_getTab(tab=>finish(tab));}catch{finish({});}
   });
 }
 export async function holdLock(name:string):Promise<()=>void> {
@@ -48,15 +54,19 @@ export function download(name:string, text:string, mime='text/plain;charset=utf-
 export function sameIdentity(a:{publisherId:string;appId:string},b:{publisherId:string;appId:string}):boolean {
   return a.publisherId===b.publisherId && a.appId===b.appId;
 }
-export async function waitFor<T>(read:()=>T|undefined, timeout=15000):Promise<T> {
+export async function waitFor<T>(read:()=>T|undefined, timeout=15000, watchKey?:string):Promise<T> {
   const current=read();if(current!==undefined)return current;
   return new Promise((resolve,reject)=>{
-    let remove=()=>{};
-    const finish=()=>{clearInterval(poll);clearTimeout(timer);remove();};
-    const check=()=>{try{const value=read();if(value!==undefined){finish();resolve(value);}}catch(e){finish();reject(e);}};
+    let remove=()=>{},settled=false;
+    const finish=()=>{settled=true;clearInterval(poll);clearTimeout(timer);remove();};
+    const check=()=>{if(settled)return;try{const value=read();if(value!==undefined){finish();resolve(value);}}catch(e){finish();reject(e);}};
     const poll=setInterval(check,400);
-    const timer=setTimeout(()=>{finish();reject(new Error('跨页通信等待超时；不会自动重派原任务'));},timeout);
+    const timer=setTimeout(()=>{if(settled)return;finish();reject(new Error('跨页通信等待超时；不会自动重派原任务'));},timeout);
     // Polling remains as a recovery path for delayed/missing GM notifications.
-    remove=()=>{};
+    if(watchKey){
+      try{remove=listen(watchKey,check);}catch{/* A missing listener retains the polling fallback. */}
+      // Close the race between the first read and registering the listener.
+      if(settled)remove();else check();
+    }
   });
 }

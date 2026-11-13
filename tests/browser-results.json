@@ -1,0 +1,136 @@
+{
+  "at": "2026-11-13T12:44:06.102Z",
+  "scope": "Isolated headless Chromium; real pages, Web Locks, native storage notifications; simulated GM and delayed loopback backend. Not HubVPS/Tampermonkey or real AdMob acceptance.",
+  "script": {
+    "version": "0.4.14",
+    "bytes": 151591,
+    "sha256": "daf151d4bedf1015234ff7c1e3773eadbf82a2caa9f82b0542626652b2df8612"
+  },
+  "workload": {
+    "rows": 10,
+    "saveDelayMs": 8000,
+    "throttleMs": 2500
+  },
+  "cases": [
+    {
+      "name": "cross-page-locks",
+      "pass": true,
+      "controllerMutex": true,
+      "workerMutex": true,
+      "unrelatedTabRetained": true,
+      "createRequests": 0
+    },
+    {
+      "name": "concurrency-1",
+      "pass": true,
+      "concurrency": 1,
+      "rows": 10,
+      "preflightMs": 733,
+      "preflightWorkers": 1,
+      "elapsedMs": 93797,
+      "rowsPerMinute": 6.396793074405365,
+      "workerTabsOpened": 1,
+      "peakPages": 2,
+      "peakWorkers": 1,
+      "peakActiveAssignments": 1,
+      "peakHeapBytes": 6213356,
+      "peakDomNodes": 19916,
+      "peakInflightSaves": 1,
+      "tasksPerWorker": [
+        10
+      ],
+      "grantIntervalsMs": {
+        "min": 9301,
+        "median": 9316,
+        "max": 9443
+      },
+      "submitIntervalsMs": {
+        "min": 9305,
+        "median": 9316,
+        "max": 9354
+      },
+      "remoteNotifications": 195,
+      "gmWrites": 260,
+      "gmWriteBytes": 1424822,
+      "storage": {
+        "entries": 18,
+        "bytes": 49308,
+        "gmEntries": 16
+      },
+      "assertions": [
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "verified-canary-before-expansion",
+        "pool-reuse-and-cap",
+        "global-throttle",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    },
+    {
+      "name": "concurrency-5",
+      "pass": true,
+      "concurrency": 5,
+      "rows": 10,
+      "preflightMs": 1611,
+      "preflightWorkers": 5,
+      "elapsedMs": 39542,
+      "rowsPerMinute": 15.173739315158565,
+      "workerTabsOpened": 5,
+      "peakPages": 6,
+      "peakWorkers": 5,
+      "peakActiveAssignments": 5,
+      "peakHeapBytes": 13368176,
+      "peakDomNodes": 18800,
+      "peakInflightSaves": 4,
+      "tasksPerWorker": [
+        3,
+        2,
+        2,
+        2,
+        1
+      ],
+      "grantIntervalsMs": {
+        "min": 2504,
+        "median": 2509,
+        "max": 9347
+      },
+      "submitIntervalsMs": {
+        "min": 2486,
+        "median": 2509,
+        "max": 9350
+      },
+      "remoteNotifications": 215,
+      "gmWrites": 276,
+      "gmWriteBytes": 1367868,
+      "storage": {
+        "entries": 26,
+        "bytes": 62700,
+        "gmEntries": 24
+      },
+      "assertions": [
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "verified-canary-before-expansion",
+        "pool-reuse-and-cap",
+        "global-throttle",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    }
+  ],
+  "measurements": {
+    "heap": "Sum of page CDP JSHeapUsedSize, sampled every 2 seconds; excludes native browser memory",
+    "serializedBytes": "Logical UTF-16 bytes (2 * string length), not disk usage"
+  },
+  "browser": {
+    "name": "Chromium",
+    "version": "158.0.8127.18",
+    "profile": "temporary isolated Playwright context"
+  },
+  "comparison": {
+    "speedup": 2.3720853775732134,
+    "timeReductionPercent": 57.84300137531051,
+    "additionalWorkerTabs": 4
+  }
+}

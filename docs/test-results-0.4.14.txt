@@ -1,0 +1,200 @@
+Verification at 2026-11-13T12:38:29.949Z
+Node v26.13.1
+
+$ node node_modules/typescript/bin/tsc --noEmit
+
+Exit: 0
+
+$ node --test tests/*.test.ts
+✔ page readiness preserves colliding sandbox timers and a later wait after queued callbacks (111.603ms)
+✔ input readback completes using the document clock for both settling delays (27.3935ms)
+✔ identity derives the app from the live route, app name and ad-unit publisher prefix (669.946ms)
+✔ identity accepts only an explicit App ID that matches the current route (538.661ms)
+✔ identity ignores the selected all-apps navigation entry and keeps the current app (322.0118ms)
+✔ form identity revalidates the current app from the session mapping without a unit id (214.4844ms)
+✔ identity refuses a page without an app route (37.4757ms)
+✔ lookup reads saved details without opening a create form or requiring currency session evidence (2107.788ms)
+✔ lookup clears a prior search, filters by exact name, and blocks on a missing total (17698.7488ms)
+✔ lookup proves an empty grid only from an explicit zero total (823.0973ms)
+✔ interstitial prepare selects manual floor and fills the configured per-row value without submitting (1576.128ms)
+✔ app-open prepare uses the app-open format card and the same manual USD floor control (1542.2191ms)
+✔ prepare uses confirmed USD configuration when the floor prefix is a bare dollar or absent (3115.4756ms)
+✔ prepare still rejects explicit other or conflicting currencies without changing manual mode (2611.9175ms)
+✔ prepare enforces the live name counter and never truncates (237.9904ms)
+✔ submit is the only create click and verify reads the saved read-only configuration back (1817.6727ms)
+✔ submit still stops if the configured dollar control changes to an explicit other currency (1592.9082ms)
+✔ a saved floor mismatch preserves the real ID and is not counted as success (1679.7242ms)
+✔ known-ID verification uses configured USD without currency cache or a create-form detour (955.9218ms)
+✔ known-ID verification ignores obsolete currency session evidence and checks the saved unit directly (943.0703ms)
+✔ an explicitly labelled saved USD floor verifies without writing synthetic session evidence (259.7533ms)
+✔ a conflicting currency in the saved floor cannot be accepted by fixed USD configuration (275.4176ms)
+✔ a retained list and unrelated body text cannot supply a saved unit ID (214.1875ms)
+✔ success instructions capture the new unit ID despite a retained create heading and other list IDs (147.9858ms)
+✔ success recovery requires the exact task name, publisher, app and format without navigating (170.0377ms)
+✔ success instructions reject copy-text conflicts, wrong ID types, publisher/app conflicts and format conflicts (505.1254ms)
+✔ success verification preserves its captured ID when saved configuration readback is unavailable (230.4114ms)
+✔ success verification opens the captured unit saved editor and verifies its actual configuration (1240.1705ms)
+✔ known-ID verification waits for the saved detail instead of using a still-mounted list (1089.2813ms)
+✔ conflicting explicitly labelled saved IDs are rejected instead of choosing the first (177.0333ms)
+✔ the redacted live saved-detail structure reads aria-describedby values with aria-hidden=true (175.0974ms)
+✔ configured USD does not bypass a saved amount mismatch and preserves the known ID (212.6595ms)
+✔ configured USD cannot certify a saved automatic or disabled floor as the requested manual mode (321.5979ms)
+✔ aria-hidden saved descriptions are accepted only through a visible header explicit reference (291.209ms)
+✔ ambiguous add control stops instead of choosing a candidate (258.3177ms)
+✔ fixed USD accepts a dollar or absent prefix while explicit non-USD symbols still stop (10.8283ms)
+✔ constraints still use integer arithmetic on attributes the live page provides (10.0762ms)
+✔ diagnostics omit page text, values, IDs and URL query strings (196.8426ms)
+✔ decimal text is lossless, normalized, and refuses ambiguous amounts (5.2721ms)
+✔ actual input min max and decimal step constraints are enforced without floating point (8.2455ms)
+✔ CSV supports BOM, headers, empty records, quoted commas and escaped quotes (2.7045ms)
+✔ TSV and multiline records retain physical source row numbers (0.8182ms)
+✔ invalid cells are row errors, duplicate names are allowed, and names are never truncated (1.8127ms)
+✔ lookup requires completeness and exact saved configuration and real unit ID (0.6564ms)
+✔ state machine requires submission intent and ownership before submitting (6.7062ms)
+✔ recovery never resets submitted tasks or erases ownership (0.8328ms)
+✔ batch freezes identity, keeps distinct prices and validates public IDs (1.9457ms)
+✔ CSV includes BOM, quotes all values, prevents spreadsheet formulas and filters safely (1.7096ms)
+✔ batch boundary revalidates hand-built rows instead of trusting their errors arrays (0.653ms)
+✔ a remote ACK resolves with page polling frozen and removes its listener (6.5416ms)
+✔ a value changing during listener registration cannot lose its wakeup (0.9286ms)
+✔ missing notifications retain polling and a timeout cleans up its listener (4.0156ms)
+✔ the observed standalone AdMob form is recognized without a shell h1 or h2 (555.9534ms)
+✔ late shell headings do not change the canonical creator identity (372.2273ms)
+✔ a shell heading cannot bypass canonical creator structure validation (394.9598ms)
+✔ a heading arriving during preparation does not prevent the first guarded submit (1874.1537ms)
+✔ legacy titled forms without a creator retain their observed root (40.3271ms)
+✔ saved routes, incomplete forms and competing creators cannot supply a create form (389.8823ms)
+✔ returning from a standalone page waits for the list grid after its route changes (30.5414ms)
+✔ known-ID search waits through stale unrelated rows until its exact row renders (2194.13ms)
+✔ known-ID search waits through stale zero-total footer until its exact row renders (1705.3344ms)
+✔ an absent exact ID waits to its deadline and preserves that known ID unverified (296.433ms)
+✔ native money formatting to 1,000.00 passes prepare and exactly one guarded submit (2253.2335ms)
+✔ canonical money grouping applied on blur passes the final input readback without losing precision (640.3519ms)
+✔ malformed money formatting cannot finish prepare or click create (1328.8758ms)
+✔ malformed grouping or a changed amount after preparation blocks submit (1704.7805ms)
+✔ malformed money grouping introduced by blur fails the final readback (632.2558ms)
+✔ grouped readback stays forbidden for ordinary inputs and non-native controls (815.8982ms)
+✔ 执行页链接在等待连接时可打开，完成后清除且拒绝外部或非执行页地址 (201.4023ms)
+✔ 补录成功说明 ID 仅针对暂停的已提交不确定行，并交给原核验流程 (85.1162ms)
+✔ CSV/Excel 清单保留原始行号、逗号名称及每行独立底价 (39.9713ms)
+✔ 预检通过和整批确认缺一不可，修改清单后必须重新预检 (73.5448ms)
+✔ 解析错误、允许重复名称与空新增行不会被表格序列化吞掉 (63.35ms)
+✔ 活动与暂停批次冻结配置，结束批次可以预检新清单 (59.9432ms)
+✔ 未确认草稿允许停止，并且不会触发开始 (107.8543ms)
+✔ 恢复后配置待核验时说明继续阻塞原因，并保留只读预检与核验入口 (35.7103ms)
+✔ 继续回调失败会显示明确错误并恢复按钮，不会静默停留在忙碌状态 (28.89ms)
+✔ 恢复后按批次显示 USD，缺少会话币种不会要求单独确认或阻止继续 (37.7056ms)
+✔ 五行恢复批次的旧控件索引 22 指向底价输入，继续按钮使用稳定 action 标识 (40.6602ms)
+✔ 执行日志显示中文步骤、批次累计耗时与本行间隔，保留原因并隐藏凭证 (153.8399ms)
+✔ 重试仅开放无提交意图的明确失败项，配置待核验项进入核验 (42.0223ms)
+✔ 面板以文本显示结果，折叠、销毁及重复挂载保护有效 (21.0615ms)
+✔ 预检只传递当前配置，不会触发开始或提交操作 (21.9365ms)
+✔ 恢复草稿后重新填充编辑器并允许重新预检 (20.9031ms)
+✔ dispatch requires running phase and canary verification before expanding pool (15.2494ms)
+✔ only known pre-submit failures may retry and retry budget is bounded (0.702ms)
+✔ reports must match all current assignment and worker identifiers (0.4091ms)
+✔ unassigned reports cannot match by undefined assignment identifiers (0.7316ms)
+✔ uncertain and historical submitting states require verification, never a fresh create (0.5202ms)
+✔ pre-submit failure stays failed, but any obtained unit ID remains created-unverified (0.4834ms)
+✔ submission intent and unique ownership are durable before the only create click (18.8228ms)
+✔ paused intent receives a denial ACK and does not click create (2.8256ms)
+✔ repeating the same intent report cannot grant twice or mutate the stored intent (2.6252ms)
+✔ loading an unconfirmed draft cannot authorize resume after a refresh (2.3783ms)
+✔ stop converges to done only after no assignment is awaiting collection (2.1547ms)
+✔ a frozen worker times out into uncertainty while retaining ownership, never a reassignment (1.4389ms)
+✔ an intent journal surviving worker refresh reports uncertainty without preparing or submitting (0.7381ms)
+✔ a terminal result remains durable with its real ID if the result ACK transport fails (2.5964ms)
+✔ a report with a different unit ID cannot replace a previously obtained real ID (1.228ms)
+✔ a late frozen-worker error is acknowledged without downgrading an independently verified result (3.5767ms)
+✔ verification transport errors restore an uncertain state with a reason, not a running verification (2.6786ms)
+✔ paused preflight uses fixed batch USD without separate confirmation and preserves all tasks (1.8232ms)
+✔ known-ID verification works without cached USD and unlocks the canary only after saved proof (1.3758ms)
+✔ an uncertain submitted task persists its exact success receipt before saved-detail navigation (1.2108ms)
+✔ a recovered success receipt survives saved-detail verification failure with its intent and ownership (1.0379ms)
+✔ success receipt recovery is never attempted for an uncertain task without submission intent (1.0711ms)
+✔ a submitted uncertain task without an exact receipt keeps its intent and uses conservative lookup (1.4941ms)
+✔ success receipts for another publisher are not persisted or used for saved-detail navigation (1.2625ms)
+✔ known-ID verification never overwrites original proof with a different unit ID (1.3347ms)
+✔ known-ID verification cannot unlock the canary with a different app or format (1.0782ms)
+✔ skipping an existing first row does not unlock concurrent creation before a real canary succeeds (1.6023ms)
+✔ reusing a worker slot preserves the prior terminal ACK while clearing stale grant and denial (0.7736ms)
+✔ a late report for an already verified old task cannot clear the reused slot new assignment (1.4014ms)
+✔ switching publisher during a paused batch cannot release its original controller lock (0.5715ms)
+✔ duplicate ad-unit names are allowed and the created unit ID is saved before config readback (3.8077ms)
+✔ preflight keeps a duplicate-name row pending because AdMob permits duplicate names (0.7622ms)
+✔ stopping an unconfirmed draft preserves incomplete preflight evidence while allowing a new batch (0.8039ms)
+✔ a persistent stop request survives controller refresh and refuses resume without creating (0.8252ms)
+✔ retry with no safe failures retains stop request; explicit safe retry clears it and waits paused (0.9971ms)
+✔ stopping an uncertain submitted task retains its assignment and ID and cannot finish the batch (0.5024ms)
+✔ a timed-out pre-submit worker can report a definite failure and be retried safely after recovery (1.0585ms)
+✔ refresh recovers an old single-page uncertain assignment only with matching pre-submit journal proof (0.9476ms)
+✔ refresh keeps uncertainty without every required old single-page pre-submit proof (7.1398ms)
+✔ readback completion is durably logged before requesting the only submission permission (2.3359ms)
+✔ 1000-row preflight persists once with every pending row and its complete log (53.9484ms)
+ℹ 1000 rows: batch writes=1, stored bytes=369160
+✔ 1000-row dispatch commands contain only the assigned task and compact ownership context (69.9031ms)
+ℹ 1000 rows: compact command bytes=810, old full snapshot bytes=240024
+✔ save preserves full batch durability while writing latest only when its value changes (1.2526ms)
+✔ tabs preflight verifies five distinct warm pages and dispatch preserves the canary before using the pool (12.4377ms)
+▶ a failing warm page prevents start even after an earlier successful preflight
+  ✔ lock (2.7989ms)
+  ✔ notification (3.2139ms)
+  ✔ identity (2.4078ms)
+✔ a failing warm page prevents start even after an earlier successful preflight (9.7213ms)
+✔ report notifications collect a terminal result arriving during another tick without a timer (29.6822ms)
+✔ report notifications survive an active panel action and removed slots release their listeners (12.1623ms)
+✔ an observed ID is durable and unverified before the saved configuration is read by that exact ID (1.5956ms)
+✔ a freshly reverified historical sample permits five new assignments without copying old results (4.7726ms)
+▶ unqualified history keeps the new batch first-row gate
+  ✔ no-verified-result (2.1197ms)
+  ✔ wrong-app (1.9053ms)
+  ✔ wrong-format (1.8271ms)
+  ✔ wrong-publisher (4.2744ms)
+  ✔ wrong-floor (2.9052ms)
+  ✔ wrong-mode (2.8602ms)
+  ✔ wrong-currency (1.9657ms)
+✔ unqualified history keeps the new batch first-row gate (19.4277ms)
+✔ a failed or inconsistent historical recheck cannot replace the old batch or authorize a new submit (4.3117ms)
+✔ an observed ID remains unverified with its original intent when saved readback fails (1.2077ms)
+✔ observed-ID entry refuses unsubmitted or completed rows, wrong IDs, and overwriting earlier proof (5.6269ms)
+✔ paused preflight tops up only the pending demand and keeps all persisted task evidence (2.8796ms)
+✔ paused preflight caps warming at concurrency and opens no page while a result remains uncertain (2.5891ms)
+✔ saved USD summaries accept canonical thousands grouping and preserve decimal precision (1732.3774ms)
+✔ malformed saved grouping never verifies a valid numeric prefix (2165.2118ms)
+✔ a valid grouped amount still rejects a different requested floor (273.0931ms)
+✔ user-entered decimals continue rejecting grouping (0.3594ms)
+✔ an ACK failure after submit preserves the exact receipt ID without certifying its floor (16.6674ms)
+ℹ tests 154
+ℹ suites 0
+ℹ pass 154
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 74695.9821
+
+Exit: 0
+
+$ node scripts/build.mjs
+Built dist/admob-batch-creator.user.js (150934 bytes, no runtime dependencies)
+
+Exit: 0
+
+$ node --check dist/admob-batch-creator.user.js
+
+Exit: 0
+
+
+Final copy-only verification recorded at 2026-11-13T12:47:40.278Z
+Only the controller and panel acceptance notices changed after the full 154/154 run above.
+$ node node_modules/typescript/bin/tsc --noEmit
+Exit: 0
+$ node scripts/build.mjs
+Built dist/admob-batch-creator.user.js (150850 body bytes; 151591 full file bytes including userscript metadata)
+Exit: 0
+$ node --check dist/admob-batch-creator.user.js
+Exit: 0
+Full artifact SHA-256: daf151d4bedf1015234ff7c1e3773eadbf82a2caa9f82b0542626652b2df8612
+$ ADMOB_TEST_SCRIPT=dist/admob-batch-creator.user.js node tests/browser.mjs
+cross-page-locks PASS; concurrency-1 PASS; concurrency-5 PASS; Exit: 0
+Raw measurements: tests/browser-results.json; comparison: docs/browser-benchmark-comparison.json

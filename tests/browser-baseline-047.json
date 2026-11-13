@@ -1,0 +1,36 @@
+{
+  "scope": "Isolated headless Chromium; real pages, Web Locks, native storage notifications; simulated GM and delayed loopback backend. Not HubVPS/Tampermonkey or real AdMob acceptance.",
+  "status": "Partial result preserved while isolated browser tests yield resources to the real HubVPS test",
+  "script": {
+    "version": "0.4.7",
+    "bytes": 142128,
+    "sha256": "c3fdb9eac5aafe7171ed1c5ea2e32e969715f4070dfb2306a759d93b2fa325f6"
+  },
+  "browser": { "name": "Chromium", "version": "158.0.8127.18", "profile": "temporary isolated Playwright context" },
+  "workload": { "rows": 10, "saveDelayMs": 8000, "throttleMs": 2500 },
+  "cases": [
+    {
+      "name": "concurrency-1",
+      "pass": true,
+      "concurrency": 1,
+      "rows": 10,
+      "preflightMs": 4121,
+      "elapsedMs": 164326,
+      "rowsPerMinute": 3.6512785560410403,
+      "workerTabsOpened": 1,
+      "peakPages": 2,
+      "peakWorkers": 1,
+      "peakHeapBytes": 6320460,
+      "peakDomNodes": 19031,
+      "peakInflightSaves": 1,
+      "tasksPerWorker": [10],
+      "grantIntervalsMs": { "min": 14402, "median": 16786, "max": 17874 },
+      "submitIntervalsMs": { "min": 14598, "median": 16123, "max": 17828 },
+      "remoteNotifications": 71,
+      "gmWrites": 362,
+      "gmWriteBytes": 2415050,
+      "storage": { "entries": 18, "bytes": 69250, "gmEntries": 16 },
+      "assertions": ["exact-name-floor-format-app-publisher-id", "unique-id-and-no-resubmit", "verified-canary-before-expansion", "pool-reuse-and-cap", "global-throttle", "real-Web-Locks", "native-remote-storage-notifications"]
+    }
+  ]
+}

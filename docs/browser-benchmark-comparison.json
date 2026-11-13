@@ -1,0 +1,279 @@
+{
+  "schema": 1,
+  "generatedAtUtc": "2026-11-13T12:47:01.420Z",
+  "scope": "Isolated headless Chromium; real pages, Web Locks, native storage notifications; simulated GM and delayed loopback backend. Not HubVPS/Tampermonkey or real AdMob acceptance.",
+  "browser": {
+    "name": "Chromium",
+    "version": "158.0.8127.18",
+    "profile": "temporary isolated Playwright context"
+  },
+  "workload": {
+    "rows": 10,
+    "saveDelayMs": 8000,
+    "throttleMs": 2500
+  },
+  "measurements": {
+    "elapsed": "Execution after the start action; input configuration and preflight preparation are reported separately. Their sum excludes initial browser/context startup.",
+    "executionMode": "Both concurrency 1 and 5 use tabs mode; concurrency 1 has a controller and one worker, not in-controller single-page mode.",
+    "heap": "Sum of sampled page CDP JSHeapUsedSize; excludes native browser memory and is not process RAM.",
+    "serializedBytes": "Logical UTF-16 bytes, 2 * serialized string length; not disk IO or disk allocation.",
+    "gm": "Simulated GM storage and notifications on isolated real browser pages; not native Tampermonkey.",
+    "repetitions": "One recorded run per version/concurrency case; no confidence interval or real AdMob speed guarantee."
+  },
+  "cases": [
+    {
+      "source": "tests/browser-baseline-047.json",
+      "version": "0.4.7",
+      "scriptSha256": "c3fdb9eac5aafe7171ed1c5ea2e32e969715f4070dfb2306a759d93b2fa325f6",
+      "concurrency": 1,
+      "rows": 10,
+      "elapsedMs": 164326,
+      "preflightMs": 4121,
+      "preparationAndExecutionMs": 168447,
+      "rowsPerMinute": 3.6512785560410403,
+      "preflightWorkers": null,
+      "peakWorkers": 1,
+      "peakPages": 2,
+      "peakActiveAssignments": null,
+      "peakInflightSaves": 1,
+      "peakHeapBytes": 6320460,
+      "peakDomNodes": 19031,
+      "gmWrites": 362,
+      "gmWriteBytes": 2415050,
+      "finalStorageBytes": 69250,
+      "finalStorageEntries": 18,
+      "tasksPerWorker": [
+        10
+      ],
+      "grantIntervalsMs": {
+        "min": 14402,
+        "median": 16786,
+        "max": 17874
+      },
+      "submitIntervalsMs": {
+        "min": 14598,
+        "median": 16123,
+        "max": 17828
+      },
+      "assertions": [
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "verified-canary-before-expansion",
+        "pool-reuse-and-cap",
+        "global-throttle",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    },
+    {
+      "source": "tests/browser-baseline-047-five.json",
+      "version": "0.4.7",
+      "scriptSha256": "c3fdb9eac5aafe7171ed1c5ea2e32e969715f4070dfb2306a759d93b2fa325f6",
+      "concurrency": 5,
+      "rows": 10,
+      "elapsedMs": 64134,
+      "preflightMs": 4926,
+      "preparationAndExecutionMs": 69060,
+      "rowsPerMinute": 9.355412105903264,
+      "preflightWorkers": 1,
+      "peakWorkers": 5,
+      "peakPages": 6,
+      "peakActiveAssignments": 5,
+      "peakInflightSaves": 3,
+      "peakHeapBytes": 13547484,
+      "peakDomNodes": 20139,
+      "gmWrites": 378,
+      "gmWriteBytes": 2184822,
+      "finalStorageBytes": 127898,
+      "finalStorageEntries": 26,
+      "tasksPerWorker": [
+        3,
+        2,
+        2,
+        2,
+        1
+      ],
+      "grantIntervalsMs": {
+        "min": 2880,
+        "median": 3010,
+        "max": 19684
+      },
+      "submitIntervalsMs": {
+        "min": 2020,
+        "median": 3127,
+        "max": 18843
+      },
+      "assertions": [
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "verified-canary-before-expansion",
+        "pool-reuse-and-cap",
+        "global-throttle",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    },
+    {
+      "source": "tests/browser-results.json",
+      "version": "0.4.14",
+      "scriptSha256": "daf151d4bedf1015234ff7c1e3773eadbf82a2caa9f82b0542626652b2df8612",
+      "concurrency": 1,
+      "rows": 10,
+      "elapsedMs": 93797,
+      "preflightMs": 733,
+      "preparationAndExecutionMs": 94530,
+      "rowsPerMinute": 6.396793074405365,
+      "preflightWorkers": 1,
+      "peakWorkers": 1,
+      "peakPages": 2,
+      "peakActiveAssignments": 1,
+      "peakInflightSaves": 1,
+      "peakHeapBytes": 6213356,
+      "peakDomNodes": 19916,
+      "gmWrites": 260,
+      "gmWriteBytes": 1424822,
+      "finalStorageBytes": 49308,
+      "finalStorageEntries": 18,
+      "tasksPerWorker": [
+        10
+      ],
+      "grantIntervalsMs": {
+        "min": 9301,
+        "median": 9316,
+        "max": 9443
+      },
+      "submitIntervalsMs": {
+        "min": 9305,
+        "median": 9316,
+        "max": 9354
+      },
+      "assertions": [
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "verified-canary-before-expansion",
+        "pool-reuse-and-cap",
+        "global-throttle",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    },
+    {
+      "source": "tests/browser-results.json",
+      "version": "0.4.14",
+      "scriptSha256": "daf151d4bedf1015234ff7c1e3773eadbf82a2caa9f82b0542626652b2df8612",
+      "concurrency": 5,
+      "rows": 10,
+      "elapsedMs": 39542,
+      "preflightMs": 1611,
+      "preparationAndExecutionMs": 41153,
+      "rowsPerMinute": 15.173739315158565,
+      "preflightWorkers": 5,
+      "peakWorkers": 5,
+      "peakPages": 6,
+      "peakActiveAssignments": 5,
+      "peakInflightSaves": 4,
+      "peakHeapBytes": 13368176,
+      "peakDomNodes": 18800,
+      "gmWrites": 276,
+      "gmWriteBytes": 1367868,
+      "finalStorageBytes": 62700,
+      "finalStorageEntries": 26,
+      "tasksPerWorker": [
+        3,
+        2,
+        2,
+        2,
+        1
+      ],
+      "grantIntervalsMs": {
+        "min": 2504,
+        "median": 2509,
+        "max": 9347
+      },
+      "submitIntervalsMs": {
+        "min": 2486,
+        "median": 2509,
+        "max": 9350
+      },
+      "assertions": [
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "verified-canary-before-expansion",
+        "pool-reuse-and-cap",
+        "global-throttle",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    }
+  ],
+  "comparisons": {
+    "baselineOneVsFive": {
+      "before": {
+        "version": "0.4.7",
+        "concurrency": 1
+      },
+      "after": {
+        "version": "0.4.7",
+        "concurrency": 5
+      },
+      "speedup": 2.5622290828577667,
+      "elapsedReductionPercent": 60.97148351447732,
+      "preparationAndExecutionReductionPercent": 59.00194126342411,
+      "gmWriteReductionPercent": -4.419889502762442,
+      "logicalWriteByteReductionPercent": 9.533053145897597,
+      "finalStorageByteReductionPercent": -84.69025270758124,
+      "observedHeapReductionPercent": -114.34332311255827
+    },
+    "currentOneVsFive": {
+      "before": {
+        "version": "0.4.14",
+        "concurrency": 1
+      },
+      "after": {
+        "version": "0.4.14",
+        "concurrency": 5
+      },
+      "speedup": 2.3720853775732134,
+      "elapsedReductionPercent": 57.84300137531051,
+      "preparationAndExecutionReductionPercent": 56.465672273352375,
+      "gmWriteReductionPercent": -6.153846153846154,
+      "logicalWriteByteReductionPercent": 3.997271238091493,
+      "finalStorageByteReductionPercent": -27.159892917984905,
+      "observedHeapReductionPercent": -115.15226232007309
+    },
+    "sameConcurrencyOne": {
+      "before": {
+        "version": "0.4.7",
+        "concurrency": 1
+      },
+      "after": {
+        "version": "0.4.14",
+        "concurrency": 1
+      },
+      "speedup": 1.75193236457456,
+      "elapsedReductionPercent": 42.92017087983643,
+      "preparationAndExecutionReductionPercent": 43.88145826283638,
+      "gmWriteReductionPercent": 28.176795580110493,
+      "logicalWriteByteReductionPercent": 41.00238090308689,
+      "finalStorageByteReductionPercent": 28.797111913357398,
+      "observedHeapReductionPercent": 1.6945602060609466
+    },
+    "sameConcurrencyFive": {
+      "before": {
+        "version": "0.4.7",
+        "concurrency": 5
+      },
+      "after": {
+        "version": "0.4.14",
+        "concurrency": 5
+      },
+      "speedup": 1.621920995397299,
+      "elapsedReductionPercent": 38.34471575139552,
+      "preparationAndExecutionReductionPercent": 40.4097885896322,
+      "gmWriteReductionPercent": 26.984126984126988,
+      "logicalWriteByteReductionPercent": 37.39224522638458,
+      "finalStorageByteReductionPercent": 50.97655944580838,
+      "observedHeapReductionPercent": 1.3235520337207984
+    }
+  }
+}

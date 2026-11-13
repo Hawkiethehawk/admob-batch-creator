@@ -3,14 +3,18 @@ import { Controller } from './controller.ts';
 import { runWorker } from './worker.ts';
 import { tabState, uuid } from './gm.ts';
 
+function saveTab(state:Record<string,unknown>):void {
+  if (typeof GM_saveTab === 'function') GM_saveTab(state);
+}
+
 async function main():Promise<void>{
   if(window.top!==window.self || document.getElementById('abc-panel-host') || document.getElementById('abc-batch-creator') || document.getElementById('abc-worker-status'))return;
   const state=await tabState();
   const url=new URL(location.href),marker=url.searchParams.get('__admob_batch_worker');
   if(marker && /^[\w-]{20,80}$/.test(marker)){
-    state.abcWorkerId=marker;GM_saveTab(state);url.searchParams.delete('__admob_batch_worker');history.replaceState(history.state,'',url.href);
+    state.abcWorkerId=marker;saveTab(state);url.searchParams.delete('__admob_batch_worker');history.replaceState(history.state,'',url.href);
   }
-  if(!state.abcTabId){state.abcTabId=uuid();GM_saveTab(state);}
+  if(!state.abcTabId){state.abcTabId=uuid();saveTab(state);}
   const adapter=new AdMobAdapter();
   if(typeof state.abcWorkerId==='string')await runWorker(state.abcWorkerId,adapter);
   else await new Controller(adapter).init();

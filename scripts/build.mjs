@@ -5,7 +5,8 @@ const header=`// ==UserScript==
 // @name         AdMob Batch Creator
 // @namespace    local.admob-batch-creator
 // @version      ${pkg.version}
-// @description  中文 AdMob 广告单元批量创建、手动 USD 底价、核验与导出；未知页面阻止提交
+// @description  中文 AdMob 插屏/开屏/信息流批量创建、三种底价模式、历史批次与核验导出
+// @match        https://admob.google.com/*
 // @match        https://apps.admob.com/*
 // @run-at       document-idle
 // @noframes

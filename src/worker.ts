@@ -1,4 +1,4 @@
-import type { Adapter, Task } from './types.ts';
+import type { Adapter, Batch, Task } from './types.ts';
 import { classifyLookup } from './core.ts';
 import { get, set, sameIdentity, uuid, waitFor, lockUnavailable, listen, holdLock } from './gm.ts';
 import type { Command, Job, Journal, Report } from './protocol.ts';
@@ -24,9 +24,19 @@ export async function performJob(job:Job, adapter:Adapter, emit:(r:Omit<Report,'
   try{
     await checkIdentity();
     if(job.kind==='verify'){
+      if(task.actual?.unitId && adapter.verifyById){
+        try{
+          const actual=await adapter.verifyById(batch.identity,task.actual.unitId,task.name,batch.format,task.floor,batch.mode ?? task.mode ?? 'manual');
+          await report({type:'result',status:actual.verified?'success':'created-unverified',actual,reason:actual.verified?'按已知广告位 ID 核验保存配置一致':'已取得 ID，保存后配置未完整核验'});
+        }catch(error){
+          const e=error as Error & {actual?:Report['actual']};
+          await report({type:'error',status:'created-unverified',actual:e.actual||task.actual,reason:e.message});
+        }
+        return;
+      }
       await adapter.home();
       const found=await adapter.lookup(batch.identity,task.name);
-      const classification=classifyLookup(found,batch.identity,batch.format,task.name,task.floor);
+      const classification=classifyLookup(found,batch.identity,batch.format,task.name,task.floor,batch.mode ?? task.mode ?? 'manual');
       // A missing item, or a name alone, never proves a prior submit failed or succeeded.
       const actual=classification.actual;
       const exactKnownId=!!task.actual?.unitId && actual?.unitId===task.actual.unitId;
@@ -35,14 +45,13 @@ export async function performJob(job:Job, adapter:Adapter, emit:(r:Omit<Report,'
       return;
     }
     await checkpoint();
-    const found=await adapter.lookup(batch.identity,task.name);
-    const classification=classifyLookup(found,batch.identity,batch.format,task.name,task.floor);
-    if(classification.status!=='pending'){
-      await report({type:'result',...classification});return;
-    }
+    // AdMob allows duplicate ad-unit names. A same-name existing unit is not a
+    // reason to reject the user's request; the new unit ID is captured after
+    // submit and used as the unique verification key.
     set(journalKey,{assignmentId,taskId:task.id,batchId:batch.id,state:'filling'} satisfies Journal);
     await report({type:'stage',stage:'filling'});
-    await adapter.prepare(batch.identity,batch.format,task.name,task.floor,checkpoint);
+    await adapter.prepare(batch.identity,batch.format,task.name,task.floor,checkpoint,batch.mode ?? task.mode ?? 'manual');
+    await report({type:'stage',stage:'filling',reason:'表单已读回，等待提交许可'});
     await checkpoint();
     // The controller durably stores submitting + intent before acknowledging this message.
     intent=true;
@@ -52,7 +61,16 @@ export async function performJob(job:Job, adapter:Adapter, emit:(r:Omit<Report,'
     intent=true;
     await adapter.submit();
     await report({type:'stage',stage:'verifying'});
-    const actual=await adapter.verify(batch.identity,batch.format,task.name,task.floor);
+    if(adapter.waitForUnitId){
+      const createdId=await adapter.waitForUnitId().catch(()=>undefined);
+      if(createdId){
+        latestActual={unitId:createdId,publisherId:batch.identity.publisherId,appId:batch.identity.appId,name:task.name,format:batch.format,mode:batch.mode ?? task.mode ?? 'manual',floor:task.floor,currency:(batch.mode ?? task.mode ?? 'manual') === 'manual'?'USD':'',verified:false};
+        // Persist the new ID as soon as it is visible; never wait for the full
+        // saved-config readback to know which unit this submission created.
+        await report({type:'stage',stage:'created',actual:latestActual});
+      }
+    }
+    const actual=await adapter.verify(batch.identity,batch.format,task.name,task.floor,batch.mode ?? task.mode ?? 'manual');
     latestActual=actual;
     await report({type:'result',status:actual.verified?'success':'created-unverified',actual,reason:actual.verified?'保存后配置核验一致':'已取得广告位 ID，配置尚未全部核验'});
   }catch(error){
@@ -60,7 +78,17 @@ export async function performJob(job:Job, adapter:Adapter, emit:(r:Omit<Report,'
     // Transport failures after a terminal result must not replace a durably saved ID/result.
     const completed=get<Journal|undefined>(journalKey,undefined);
     if(completed?.state==='done' && completed.report)return;
-    const actual=e.actual || latestActual;
+    let actual=e.actual || latestActual;
+    // A delayed ACK can fail after the platform has already shown its receipt.
+    // Preserve that exact task's ID before reporting the transport error.
+    if(intent && !actual?.unitId && adapter.recoverCreatedId){
+      try{
+        const recovered=adapter.recoverCreatedId(batch.identity,task.name,batch.format);
+        if(recovered && /^ca-app-pub-\d{16}\/\d{10}$/.test(recovered) && recovered.startsWith(`ca-app-${batch.identity.publisherId}/`)){
+          actual={unitId:recovered,publisherId:batch.identity.publisherId,appId:batch.identity.appId,name:task.name,format:batch.format,verified:false};
+        }
+      }catch{/* Conflicting or absent receipts cannot certify this task. */}
+    }
     const status:Task['status']=actual?.unitId?'created-unverified':intent?'uncertain':'failed';
     await report({type:'error',status,reason:e.message,actual,fatal:e.fatal});
   }
@@ -88,7 +116,7 @@ export async function runWorker(workerId:string, adapter:Adapter):Promise<void> 
     }
     set(outKey,r);
     status.textContent='AdMob 批量执行页：'+(data.reason || data.stage || data.type);
-    await waitFor(()=>get<Command>(cmdKey,{seq:0}).ack===r.id?true:undefined,60000);
+    await waitFor(()=>get<Command>(cmdKey,{seq:0}).ack===r.id?true:undefined,60000,cmdKey);
   }
   async function tick():Promise<void>{
     if(running)return;
@@ -105,13 +133,13 @@ export async function runWorker(workerId:string, adapter:Adapter):Promise<void> 
     if(!cmd.job || seen===cmd.job.assignmentId)return;
     const job=cmd.job;
     // Controller ownership must still match the persisted batch; no worker reads a shared queue.
-    const batch=get<typeof job.batch|undefined>('batch:'+job.batch.identity.publisherId+':'+job.batch.identity.appId+':'+job.batch.id,undefined);
+    const batch=get<Batch|undefined>('batch:'+job.batch.identity.publisherId+':'+job.batch.identity.appId+':'+job.batch.id,undefined);
     if(!batch || batch.controllerId!==job.batch.controllerId || !['running','paused','stopping'].includes(batch.phase))return;
     seen=job.assignmentId;running=true;activeJob=job;
     try{
       await performJob(job,adapter,emit,async()=>{
         const latest=get<Command>(cmdKey,{seq:0});
-        const control=get<typeof job.batch>('batch:'+job.batch.identity.publisherId+':'+job.batch.identity.appId+':'+job.batch.id,job.batch);
+        const control=get<Batch|undefined>('batch:'+job.batch.identity.publisherId+':'+job.batch.identity.appId+':'+job.batch.id,undefined) ?? job.batch;
         if(latest.job?.assignmentId!==job.assignmentId || control.controllerId!==job.batch.controllerId)throw Object.assign(new Error('任务归属已变更，停止当前执行'),{fatal:true});
         if(latest.blocked)throw new Error(latest.blocked);
         if(control.phase!=='running')throw new Error(control.phase==='stopping'?'批次已停止，未发起提交':'批次已暂停，在提交前安全停止');

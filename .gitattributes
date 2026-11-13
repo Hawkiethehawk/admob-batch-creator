@@ -1,2 +1,4 @@
 * text=auto eol=lf
 *.zip binary
+*.csv -text
+dist/*.user.js -text
