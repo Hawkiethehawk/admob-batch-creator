@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AdMob Batch Creator
 // @namespace    local.admob-batch-creator
-// @version      0.5.0
+// @version      0.5.1
 // @description  中文 AdMob 插屏/开屏/信息流批量创建、三种底价模式、历史批次与核验导出
 // @match        https://admob.google.com/*
 // @match        https://apps.admob.com/*
@@ -1065,7 +1065,7 @@
       if (!enabled(createButton)) throw new AdapterError("ROW", "创建广告单元按钮仍不可用，底价或名称未通过页面校验", false);
       this.prepared = { identity, format, name, floor: mode === "manual" ? normalizeDecimal(floor) : "", mode, nameInput, floorInput, form };
     }
-    async submit() {
+    async submit(beforeClick) {
       const state = this.prepared;
       if (!state || this.submitted) throw new AdapterError("SUBMIT_GUARD", "当前表单未通过准备或已经执行过提交");
       await this.assertIdentity(state.identity);
@@ -1086,6 +1086,7 @@
       const create = elements(this.doc, 'material-button.btn-yes, [role="button"]').filter((e) => sameLabel(txt(e), ["创建广告单元"]));
       const createButton = one(create, "提交前创建按钮");
       if (!enabled(createButton)) throw new AdapterError("ROW", "提交前创建按钮不可用", false);
+      beforeClick?.();
       this.submitted = true;
       click(createButton, "创建广告单元");
     }
@@ -1981,6 +1982,10 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
     try {
       await checkIdentity();
       if (job.kind === "verify") {
+        if (!task.actual?.unitId) {
+          await report({ type: "result", status: "uncertain", reason: "缺少本次创建的广告位 ID，请保留原执行页或录入成功说明中的 ID 后核验" });
+          return;
+        }
         if (task.actual?.unitId && adapter.verifyById) {
           try {
             const actual3 = await adapter.verifyById(batch.identity, task.actual.unitId, task.name, batch.format, task.floor, batch.mode ?? task.mode ?? "manual");
@@ -2000,7 +2005,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
           await report({ type: "result", status: "created-unverified", actual: task.actual, reason: "同名查询结果与已取得广告位ID不一致，保留原ID等待核验" });
           return;
         }
-        await report({ type: "result", status: classification.status === "exists" ? exactKnownId ? "success" : "exists" : task.actual?.unitId ? "created-unverified" : "uncertain", actual: actual2 || task.actual, reason: classification.status === "pending" ? "暂未找到记录，不能证明创建失败；继续保留待核验" : classification.reason });
+        await report({ type: "result", status: classification.status === "exists" && exactKnownId ? "success" : "created-unverified", actual: exactKnownId ? actual2 : task.actual, reason: classification.status === "pending" ? "暂未找到记录，不能证明创建失败；继续保留待核验" : classification.reason });
         return;
       }
       await checkpoint();
@@ -2014,7 +2019,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       await checkpoint();
       set(journalKey, { assignmentId, taskId: task.id, batchId: batch.id, state: "intent" });
       intent = true;
-      await adapter.submit();
+      await adapter.submit(() => permission(true));
       await report({ type: "stage", stage: "verifying" });
       if (adapter.waitForUnitId) {
         const createdId = await adapter.waitForUnitId().catch(() => void 0);
@@ -2098,14 +2103,14 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       running = true;
       activeJob = job;
       try {
-        await performJob(job, adapter, emit, async () => {
+        await performJob(job, adapter, emit, (beforeClick) => {
           const latest = get(cmdKey, { seq: 0 });
-          const control = get("batch:" + job.batch.identity.publisherId + ":" + job.batch.identity.appId + ":" + job.batch.id, void 0) ?? job.batch;
-          if (latest.job?.assignmentId !== job.assignmentId || control.controllerId !== job.batch.controllerId) throw Object.assign(new Error("任务归属已变更，停止当前执行"), { fatal: true });
+          const control = get("batch:" + job.batch.identity.publisherId + ":" + job.batch.identity.appId + ":" + job.batch.id, void 0);
+          if (latest.job?.assignmentId !== job.assignmentId || !control || control.controllerId !== job.batch.controllerId) throw Object.assign(new Error("任务归属已变更，停止当前执行"), { fatal: true });
           if (latest.blocked) throw new Error(latest.blocked);
           if (control.phase !== "running") throw new Error(control.phase === "stopping" ? "批次已停止，未发起提交" : "批次已暂停，在提交前安全停止");
           const report = get(outKey, void 0);
-          if (report?.type === "intent" && (!latest.grant || latest.grant.assignmentId !== job.assignmentId || latest.grant.expires < Date.now())) throw new Error("提交许可缺失或过期，未点击创建");
+          if ((beforeClick || report?.type === "intent") && (!latest.grant || latest.grant.assignmentId !== job.assignmentId || latest.grant.expires <= Date.now())) throw new Error("提交许可缺失或过期，未点击创建");
         });
       } catch (e) {
         status.textContent = "执行页通信中断：" + e.message + "。保持此页，返回主控恢复核验。";
@@ -2225,6 +2230,15 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       this.slots.get(id)?.removeReportListener?.();
       this.slots.delete(id);
     }
+    savedReport(slot) {
+      const assignment = slot.busy || get("command:" + slot.id, { seq: 0 }).job?.assignmentId;
+      const task = this.batch?.tasks.find((task2) => task2.assignmentId === assignment && task2.workerId === slot.id);
+      if (task) {
+        const journal = get("journal:" + assignment, void 0);
+        if (journal?.state === "done" && journal.batchId === this.batch.id && journal.taskId === task.id && journal.assignmentId === assignment && journal.report && reportBelongs(journal.report, task, slot.id) && ["result", "error"].includes(journal.report.type)) return journal.report;
+      }
+      return get("report:" + slot.id, void 0);
+    }
     notice(text) {
       this.panel.update({ notice: text });
     }
@@ -2294,19 +2308,27 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       batch.controllerId = this.id;
       if (batch.phase !== "done") batch.phase = batch.stopRequestedAt ? "stopping" : batch.confirmedAt ? "paused" : "draft";
       for (const task of batch.tasks) {
+        const remote = !!task.workerId && !task.workerId.startsWith("single:");
         if (batch.phase !== "done" && batch.execution === "single" && task.status === "uncertain" && !task.intentAt && !task.actual && task.assignmentId && task.workerId?.startsWith("single:") && task.workerId !== "single:" + this.id) {
-          const journal = get("journal:" + task.assignmentId, void 0);
+          const journal2 = get("journal:" + task.assignmentId, void 0);
           const command = get("command:" + task.workerId, void 0);
-          if (journal?.state === "filling" && journal.assignmentId === task.assignmentId && journal.taskId === task.id && journal.batchId === batch.id && !command?.grant) {
+          if (journal2?.state === "filling" && journal2.assignmentId === task.assignmentId && journal2.taskId === task.id && journal2.batchId === batch.id && !command?.grant) {
             transition(task, "failed", "旧单页实例已结束，匹配的填表记录无提交意图、结果或许可；确认未提交，可手动重试");
           }
         }
-        if (["filling", "submitting", "verifying"].includes(task.status)) recoverTask(task);
-        if (batch.phase !== "done" && task.assignmentId && task.workerId && ["filling", "submitting", "verifying"].includes(task.status)) {
+        if (batch.phase !== "done" && remote && task.status === "filling") transition(task, "uncertain", "主控已刷新，等待原执行页报告");
+        else if (["filling", "submitting", "verifying"].includes(task.status)) recoverTask(task);
+        const journal = task.assignmentId ? get("journal:" + task.assignmentId, void 0) : void 0;
+        const completed = journal?.state === "done" && journal.batchId === batch.id && journal.taskId === task.id && journal.assignmentId === task.assignmentId && !!journal.report && reportBelongs(journal.report, task, task.workerId || "") && ["result", "error"].includes(journal.report.type);
+        if (batch.phase !== "done" && task.assignmentId && task.workerId && !["success", "exists", "stopped", "conflict"].includes(task.status) && (remote || completed)) {
           this.addSlot({ id: task.workerId, busy: task.assignmentId, since: Date.now() });
         }
       }
       this.save();
+      for (const slot of this.slots.values()) {
+        const report = this.savedReport(slot);
+        if (report && ["result", "error"].includes(report.type)) await this.handle(slot, report);
+      }
       this.notice(batch.phase === "draft" ? "已恢复未确认草稿。检查清单后点击开始创建，将自动检查执行条件。" : batch.phase === "done" ? "已恢复已结束批次，可查看历史结果或填写新清单。" : "已恢复历史批次并暂停。提交过或结果不确定的任务只允许先核验；点击继续才会派发尚未提交的任务。");
     }
     signature(config) {
@@ -2570,6 +2592,11 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
               this.save();
               continue;
             }
+            if (!knownId) {
+              transition(task, "uncertain", "缺少本次创建的广告位 ID，请保留原执行页或录入成功说明中的 ID 后核验");
+              this.save();
+              continue;
+            }
             const lookup = await this.adapter.lookup(this.batch.identity, task.name);
             const c = classifyLookup(lookup, this.batch.identity, this.batch.format, task.name, task.floor, this.batch.mode);
             if (c.status === "exists") {
@@ -2626,11 +2653,14 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         this.localBusy = true;
         void performJob(job, this.adapter, async (data) => {
           await this.handle(slot, { ...data, id: uuid(), at: Date.now(), workerId: slot.id });
-        }, async () => {
+        }, (beforeClick) => {
           if (this.batch?.phase !== "running") throw new Error("任务已暂停或停止，在提交前安全停下");
+          const control = get(this.key(batch), void 0);
           const command = get("command:" + slot.id, { seq: 0 });
+          if (!control || control.controllerId !== job.batch.controllerId || command.job?.assignmentId !== job.assignmentId) throw new Error("任务归属已变更，停止当前执行");
+          if (control.phase !== "running") throw new Error("任务已暂停或停止，在提交前安全停下");
           if (command.blocked) throw new Error(command.blocked);
-          if (task.intentAt && (!command.grant || command.grant.expires < Date.now())) throw new Error("提交许可已过期，未点击创建");
+          if ((beforeClick || task.intentAt) && (!command.grant || command.grant.assignmentId !== job.assignmentId || command.grant.expires <= Date.now())) throw new Error("提交许可已过期，未点击创建");
         }).catch((e) => this.pause("单页通信或存储异常：" + e.message)).finally(() => {
           this.localBusy = false;
         });
@@ -2642,6 +2672,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       const cmd = get("command:" + slot.id, { seq: 0 });
       if (cmd.ack === r.id) {
         slot.lastReport = r.id;
+        if (["result", "error"].includes(r.type) && slot.busy === r.assignmentId) slot.busy = void 0;
         return;
       }
       if (["success", "exists"].includes(task.status)) {
@@ -2710,7 +2741,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       this.tickBusy = true;
       try {
         for (const slot of this.slots.values()) {
-          const r = get("report:" + slot.id, void 0);
+          const r = this.savedReport(slot);
           if (r && r.id !== slot.lastReport && r.type !== "hello") await this.handle(slot, r);
           if (slot.busy && Date.now() - slot.since > 12e4) {
             const t = this.batch.tasks.find((t2) => t2.assignmentId === slot.busy);
@@ -2745,7 +2776,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         if (canDispatch(this.batch, busy)) {
           const task = this.batch.tasks.find((t) => t.status === "pending" && !t.assignmentId && Date.now() - Date.parse(t.logs.at(-1)?.at || this.batch.createdAt) > Math.max(0, t.attempts - 1) * 3e3);
           if (task) {
-            let slot = [...this.slots.values()].find((s) => !s.busy && (this.batch.execution === "single" ? s.id.startsWith("single:") : s.probePassed && s.batchId === this.batch.id && !!s.identity && sameIdentity(s.identity, this.batch.identity)) && !s.tab?.closed);
+            let slot = [...this.slots.values()].find((s) => !s.busy && (this.batch.execution === "single" ? s.id === "single:" + this.id : s.probePassed && s.batchId === this.batch.id && !!s.identity && sameIdentity(s.identity, this.batch.identity)) && !s.tab?.closed);
             if (!slot) {
               if (this.batch.execution === "single") {
                 slot = { id: "single:" + this.id, since: Date.now() };

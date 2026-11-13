@@ -3,7 +3,7 @@ import { classifyLookup } from './core.ts';
 import { get, set, sameIdentity, uuid, waitFor, lockUnavailable, listen, holdLock } from './gm.ts';
 import type { Command, Job, Journal, Report } from './protocol.ts';
 
-export async function performJob(job:Job, adapter:Adapter, emit:(r:Omit<Report,'id'|'at'|'workerId'>)=>Promise<void>, permission:()=>Promise<void>):Promise<void> {
+export async function performJob(job:Job, adapter:Adapter, emit:(r:Omit<Report,'id'|'at'|'workerId'>)=>Promise<void>, permission:(beforeClick?:boolean)=>void):Promise<void> {
   const {batch,task,assignmentId,workerId}=job;
   const journalKey='journal:'+assignmentId;
   const old=get<Journal|undefined>(journalKey,undefined);
@@ -24,6 +24,10 @@ export async function performJob(job:Job, adapter:Adapter, emit:(r:Omit<Report,'
   try{
     await checkIdentity();
     if(job.kind==='verify'){
+      if(!task.actual?.unitId){
+        await report({type:'result',status:'uncertain',reason:'缺少本次创建的广告位 ID，请保留原执行页或录入成功说明中的 ID 后核验'});
+        return;
+      }
       if(task.actual?.unitId && adapter.verifyById){
         try{
           const actual=await adapter.verifyById(batch.identity,task.actual.unitId,task.name,batch.format,task.floor,batch.mode ?? task.mode ?? 'manual');
@@ -41,7 +45,7 @@ export async function performJob(job:Job, adapter:Adapter, emit:(r:Omit<Report,'
       const actual=classification.actual;
       const exactKnownId=!!task.actual?.unitId && actual?.unitId===task.actual.unitId;
       if(task.actual?.unitId && !exactKnownId){await report({type:'result',status:'created-unverified',actual:task.actual,reason:'同名查询结果与已取得广告位ID不一致，保留原ID等待核验'});return;}
-      await report({type:'result',status:classification.status==='exists'?(exactKnownId?'success':'exists'):(task.actual?.unitId?'created-unverified':'uncertain'),actual:actual || task.actual,reason:classification.status==='pending'?'暂未找到记录，不能证明创建失败；继续保留待核验':classification.reason});
+      await report({type:'result',status:classification.status==='exists' && exactKnownId?'success':'created-unverified',actual:exactKnownId?actual:task.actual,reason:classification.status==='pending'?'暂未找到记录，不能证明创建失败；继续保留待核验':classification.reason});
       return;
     }
     await checkpoint();
@@ -59,7 +63,7 @@ export async function performJob(job:Job, adapter:Adapter, emit:(r:Omit<Report,'
     await checkpoint();
     set(journalKey,{assignmentId,taskId:task.id,batchId:batch.id,state:'intent'} satisfies Journal);
     intent=true;
-    await adapter.submit();
+    await adapter.submit(()=>permission(true));
     await report({type:'stage',stage:'verifying'});
     if(adapter.waitForUnitId){
       const createdId=await adapter.waitForUnitId().catch(()=>undefined);
@@ -137,14 +141,14 @@ export async function runWorker(workerId:string, adapter:Adapter):Promise<void> 
     if(!batch || batch.controllerId!==job.batch.controllerId || !['running','paused','stopping'].includes(batch.phase))return;
     seen=job.assignmentId;running=true;activeJob=job;
     try{
-      await performJob(job,adapter,emit,async()=>{
+      await performJob(job,adapter,emit,(beforeClick)=>{
         const latest=get<Command>(cmdKey,{seq:0});
-        const control=get<Batch|undefined>('batch:'+job.batch.identity.publisherId+':'+job.batch.identity.appId+':'+job.batch.id,undefined) ?? job.batch;
-        if(latest.job?.assignmentId!==job.assignmentId || control.controllerId!==job.batch.controllerId)throw Object.assign(new Error('任务归属已变更，停止当前执行'),{fatal:true});
+        const control=get<Batch|undefined>('batch:'+job.batch.identity.publisherId+':'+job.batch.identity.appId+':'+job.batch.id,undefined);
+        if(latest.job?.assignmentId!==job.assignmentId || !control || control.controllerId!==job.batch.controllerId)throw Object.assign(new Error('任务归属已变更，停止当前执行'),{fatal:true});
         if(latest.blocked)throw new Error(latest.blocked);
         if(control.phase!=='running')throw new Error(control.phase==='stopping'?'批次已停止，未发起提交':'批次已暂停，在提交前安全停止');
         const report=get<Report|undefined>(outKey,undefined);
-        if(report?.type==='intent' && (!latest.grant || latest.grant.assignmentId!==job.assignmentId || latest.grant.expires<Date.now()))throw new Error('提交许可缺失或过期，未点击创建');
+        if((beforeClick || report?.type==='intent') && (!latest.grant || latest.grant.assignmentId!==job.assignmentId || latest.grant.expires<=Date.now()))throw new Error('提交许可缺失或过期，未点击创建');
       });
     }catch(e){status.textContent='执行页通信中断：'+(e as Error).message+'。保持此页，返回主控恢复核验。';}
     finally{running=false;}

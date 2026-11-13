@@ -802,7 +802,7 @@ export class AdMobAdapter implements Adapter {
     this.prepared = { identity, format, name, floor: mode === 'manual' ? normalizeDecimal(floor) : '', mode, nameInput, floorInput, form };
   }
 
-  async submit(): Promise<void> {
+  async submit(beforeClick?: () => void): Promise<void> {
     const state = this.prepared;
     if (!state || this.submitted) throw new AdapterError('SUBMIT_GUARD', '当前表单未通过准备或已经执行过提交');
     await this.assertIdentity(state.identity);
@@ -823,6 +823,8 @@ export class AdMobAdapter implements Adapter {
     const create = elements(this.doc, 'material-button.btn-yes, [role="button"]').filter((e) => sameLabel(txt(e), ['创建广告单元']));
     const createButton = one(create, '提交前创建按钮');
     if (!enabled(createButton)) throw new AdapterError('ROW', '提交前创建按钮不可用', false);
+    // Keep the final storage/permission check synchronous with the native click.
+    beforeClick?.();
     this.submitted = true;
     click(createButton, '创建广告单元');
   }

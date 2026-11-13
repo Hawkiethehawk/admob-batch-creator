@@ -50,7 +50,7 @@ const server = createServer(async (request, response) => {
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
-const outputPath = resolve(process.env.ADMOB_BROWSER_RESULTS || 'tests/browser-results-0.5.0.json');
+const outputPath = resolve(process.env.ADMOB_BROWSER_RESULTS || 'tests/browser-results-0.5.1.json');
 const results = {
   at: new Date().toISOString(),
   scope: 'Isolated headless Chromium; real pages, Web Locks, native storage notifications; simulated GM and delayed loopback backend. Not HubVPS/Tampermonkey or real AdMob acceptance.',
@@ -267,13 +267,39 @@ async function modesAndHistory(browser) {
   } finally { await run.close(); }
 }
 
+async function controllerRefresh(browser) {
+  const run=await setup(browser,{delay:3000});
+  try {
+    await configure(run,[['REFRESH_INFLIGHT','60']],1);
+    await run.page.getByRole('button',{name:'开始创建',exact:true}).click();
+    const deadline=Date.now()+15000;
+    while(!run.backend.requests.length && Date.now()<deadline)await pause(50);
+    assert.equal(run.backend.requests.length,1,'one request was submitted before the refresh');
+    const before=await readBatch(run.page);
+    assert.ok(before.tasks[0].intentAt);
+    assert.equal(before.tasks[0].actual?.unitId,undefined,'refresh occurs before the ID is returned');
+    await run.page.reload();
+    await run.page.waitForFunction(()=>{
+      const key=Object.keys(localStorage).find(key=>key.startsWith('gm:abc:v1:batch:'));
+      const batch=key&&JSON.parse(localStorage.getItem(key));
+      return batch?.phase==='done' && batch.tasks[0].status==='success';
+    },undefined,{timeout:30000});
+    const after=await readBatch(run.page);
+    assert.equal(after.id,before.id);assert.equal(after.tasks[0].assignmentId,before.tasks[0].assignmentId);
+    assert.equal(after.tasks[0].actual.unitId,run.backend.requests[0].unitId);
+    assert.equal(after.tasks[0].actual.verified,true);assert.equal(run.backend.requests.length,1);
+    assert.deepEqual(run.errors,[]);
+    return {createRequests:1,restoredSameAssignment:true,lateIdCollected:true,savedConfigurationVerified:true};
+  } finally {await run.close();}
+}
+
 let browser;
 try {
   const executablePath = process.env.ADMOB_BROWSER_PATH;
   if (executablePath) assert.ok(existsSync(executablePath), 'ADMOB_BROWSER_PATH does not exist');
   browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   results.browser = { name: 'Chromium', version: browser.version(), profile: 'temporary isolated Playwright context' };
-  const cases = [['cross-page-locks', () => lockChecks(browser)], ['modes-and-history', () => modesAndHistory(browser)], ['concurrency-1', () => benchmark(browser, 1)], ['concurrency-5', () => benchmark(browser, 5)]];
+  const cases = [['cross-page-locks', () => lockChecks(browser)], ['modes-and-history', () => modesAndHistory(browser)], ['concurrency-1', () => benchmark(browser, 1)], ['concurrency-5', () => benchmark(browser, 5)], ['controller-refresh',()=>controllerRefresh(browser)]];
   for (const [name, execute] of cases) {
     if (existsSync(resolve('tests/.browser-pause'))) { results.paused = true; break; }
     if (process.env.CASE_FILTER && !name.includes(process.env.CASE_FILTER)) continue;

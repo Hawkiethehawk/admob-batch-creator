@@ -1,0 +1,154 @@
+{
+  "at": "2026-11-13T14:32:10.550Z",
+  "scope": "Isolated headless Chromium; real pages, Web Locks, native storage notifications; simulated GM and delayed loopback backend. Not HubVPS/Tampermonkey or real AdMob acceptance.",
+  "script": {
+    "version": "0.5.1",
+    "bytes": 164100,
+    "sha256": "8abde7439b7400a3cf771519f4941c92b0aac706bc7565436703461e16bfdca5"
+  },
+  "workload": {
+    "rows": 5,
+    "saveDelayMs": 3000,
+    "throttleMs": 2500
+  },
+  "cases": [
+    {
+      "name": "cross-page-locks",
+      "pass": true,
+      "controllerMutex": true,
+      "workerMutex": true,
+      "unrelatedTabRetained": true,
+      "createRequests": 0
+    },
+    {
+      "name": "modes-and-history",
+      "pass": true,
+      "combinations": 9,
+      "succeeded": 9,
+      "createRequests": 9,
+      "historyCopyExportIsolated": true,
+      "completeWorkflowTimestamps": true
+    },
+    {
+      "name": "concurrency-1",
+      "pass": true,
+      "concurrency": 1,
+      "rows": 5,
+      "inputMs": 43,
+      "automaticPreparationMs": 97,
+      "elapsedMs": 21547,
+      "elapsedIncludesAutomaticPreparation": true,
+      "rowsPerMinute": 13.92305193298371,
+      "workerTabsOpened": 1,
+      "peakPages": 2,
+      "peakWorkers": 1,
+      "peakActiveAssignments": 1,
+      "peakHeapBytes": 6808660,
+      "peakDomNodes": 8232,
+      "peakInflightSaves": 1,
+      "tasksPerWorker": [
+        5
+      ],
+      "grantIntervalsMs": {
+        "min": 4257,
+        "median": 4270,
+        "max": 4274
+      },
+      "submitIntervalsMs": {
+        "min": 4256,
+        "median": 4270,
+        "max": 4274
+      },
+      "remoteNotifications": 100,
+      "gmWrites": 135,
+      "gmWriteBytes": 468216,
+      "storage": {
+        "entries": 13,
+        "bytes": 28318,
+        "gmEntries": 11
+      },
+      "assertions": [
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "verified-canary-before-expansion",
+        "pool-reuse-and-cap",
+        "global-throttle",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    },
+    {
+      "name": "concurrency-5",
+      "pass": true,
+      "concurrency": 5,
+      "rows": 5,
+      "inputMs": 44,
+      "automaticPreparationMs": 425,
+      "elapsedMs": 16618,
+      "elapsedIncludesAutomaticPreparation": true,
+      "rowsPerMinute": 18.052713924660008,
+      "workerTabsOpened": 5,
+      "peakPages": 6,
+      "peakWorkers": 5,
+      "peakActiveAssignments": 4,
+      "peakHeapBytes": 14122692,
+      "peakDomNodes": 10589,
+      "peakInflightSaves": 2,
+      "tasksPerWorker": [
+        2,
+        1,
+        1,
+        1
+      ],
+      "grantIntervalsMs": {
+        "min": 2507,
+        "median": 2517,
+        "max": 4268
+      },
+      "submitIntervalsMs": {
+        "min": 2507,
+        "median": 2518,
+        "max": 4266
+      },
+      "remoteNotifications": 120,
+      "gmWrites": 151,
+      "gmWriteBytes": 463922,
+      "storage": {
+        "entries": 21,
+        "bytes": 39962,
+        "gmEntries": 19
+      },
+      "assertions": [
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "verified-canary-before-expansion",
+        "pool-reuse-and-cap",
+        "global-throttle",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    },
+    {
+      "name": "controller-refresh",
+      "pass": true,
+      "createRequests": 1,
+      "restoredSameAssignment": true,
+      "lateIdCollected": true,
+      "savedConfigurationVerified": true
+    }
+  ],
+  "measurements": {
+    "heap": "Sum of page CDP JSHeapUsedSize, sampled every 2 seconds; excludes native browser memory",
+    "serializedBytes": "Logical UTF-16 bytes (2 * string length), not disk usage"
+  },
+  "browser": {
+    "name": "Chromium",
+    "version": "148.0.7778.96",
+    "profile": "temporary isolated Playwright context"
+  },
+  "comparison": {
+    "speedup": 1.2966060897821639,
+    "timeReductionPercent": 22.875574325892234,
+    "additionalWorkerTabs": 4
+  }
+}

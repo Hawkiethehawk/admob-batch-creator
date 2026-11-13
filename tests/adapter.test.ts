@@ -56,6 +56,27 @@ async function identified(): Promise<{ env: FixtureEnv; identity: Identity }> {
   return { env, identity };
 }
 
+test('a stop during final identity readback is checked before the native create click',async t=>{
+  const env=load();t.after(()=>env.dom.window.close());
+  const account=await env.adapter.identify();
+  await env.adapter.prepare(account,'interstitial','stop-at-click','60',async()=>{});
+  let running=true,checks=0;
+  const identify=env.adapter.identify.bind(env.adapter);
+  t.mock.method(env.adapter,'identify',async()=>{const current=await identify();running=false;return current;});
+  await assert.rejects(()=>env.adapter.submit(()=>{checks++;if(!running)throw Error('批次已停止');}),/已停止/);
+  assert.equal(checks,1);assert.equal(env.fixture.state.clicks.length,0);
+});
+
+test('an allowed synchronous guard runs immediately before the only native click',async t=>{
+  const env=load();t.after(()=>env.dom.window.close());
+  const account=await env.adapter.identify();
+  await env.adapter.prepare(account,'interstitial','guarded-click','60',async()=>{});
+  const order:string[]=[];
+  env.doc.addEventListener('click',event=>{if((event.target as Element).closest('material-button.btn-yes'))order.push('click');},true);
+  await env.adapter.submit(()=>{order.push('guard');assert.equal(env.fixture.state.clicks.length,0);});
+  assert.deepEqual(order,['guard','click']);assert.equal(env.fixture.state.clicks.length,1);
+});
+
 test('page readiness preserves colliding sandbox timers and a later wait after queued callbacks', async (t) => {
   const dom = new JSDOM('<main></main>');
   const view = dom.window;

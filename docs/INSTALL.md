@@ -2,7 +2,7 @@
 
 当前项目工作根为 `C:\Users\Administrator\Desktop\AdMob-Batch-Creator-交付`，代码和文档已直接位于根下，不再套 `源码` 目录。本文的 `dist/...` 路径以该工作根为准；旧 `C:\Users\Administrator\work\admob-batch-creator` 仅作历史副本，不再编辑。完整入口见 [README](../README.md)。
 
-当前本地交付版本为 **0.5.0**，安装文件为 `dist/admob-batch-creator.user.js`。本轮未更新原浏览器，最近现场安装记录仍为 0.4.14。日常使用只需要浏览器、Tampermonkey 和原浏览器内已登录的中文 AdMob 会话，不需要 Node.js、本地服务、OAuth、API Key 或 Cookie 文件。
+当前本地交付版本为 **0.5.1**，安装文件为 `dist/admob-batch-creator.user.js`。本轮未更新原浏览器，最近现场安装记录仍为 0.4.14。日常使用只需要浏览器、Tampermonkey 和原浏览器内已登录的中文 AdMob 会话，不需要 Node.js、本地服务、OAuth、API Key 或 Cookie 文件。
 
 0.5.0 增加插屏、开屏、信息流的三种底价模式、即时清单、批量前缀、自动开始检查和历史批次计时。新增功能仅经本地与隔离 Chromium 验证，真实验收范围见 [验证记录](VALIDATION.md)。
 
@@ -23,7 +23,7 @@
 1. 在原 HubVPS 浏览器打开 Tampermonkey 管理面板：`chrome-extension://dhdgffkkebhmkfjojejmpbldmpobfkfo/options.html#nav=dashboard`。
 2. 更新时编辑已有的 AdMob Batch Creator 脚本，避免安装两个同时运行的副本。首次安装可以选择“添加新脚本”。
 3. 用文本编辑器打开交付文件 `dist/admob-batch-creator.user.js`，复制全部内容，替换 Tampermonkey 编辑区内容，保留完整 UserScript 头。
-4. 核对脚本头版本为 `0.5.0`，匹配范围包含 `https://admob.google.com/*` 与 `https://apps.admob.com/*`。保存后在仪表盘核对安装版本和启用状态。
+4. 核对脚本头版本为 `0.5.1`，匹配范围包含 `https://admob.google.com/*` 与 `https://apps.admob.com/*`。保存后在仪表盘核对安装版本和启用状态。
 5. 回到原 AdMob 应用的广告单元列表并刷新。确认中文面板出现，原批次状态和已有 ID 正确保留；未完成批次按恢复规则暂停。更新不会授权新提交，也不要重置批次或重新导入相同请求来补建。
 
 本次不依赖任何固定端口的本地安装服务器。若浏览器直接打开 `.user.js` 后显示 Tampermonkey 安装页，也可核对名称和版本后安装；只显示源码时使用编辑器方式。

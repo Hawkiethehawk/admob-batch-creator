@@ -6,7 +6,9 @@ GitHub 仓库：[Hawkiethehawk/admob-batch-creator](https://github.com/Hawkiethe
 
 **当前工作根为 `C:\Users\Administrator\Desktop\AdMob-Batch-Creator-交付`。** `src`、`tests`、`docs`、`scripts`、`examples`、`dist` 和 `package.json` 均直接位于本目录；后续编辑、构建和检查从这里执行。旧 `C:\Users\Administrator\work\admob-batch-creator` 仅作为历史副本，不再编辑。交接入口为 [HANDOFF-AI-AGENT.md](HANDOFF-AI-AGENT.md)，真实导出保留在 [结果](结果/)。
 
-**当前本地交付版本：v0.5.0。** 插屏、开屏、信息流（原生广告）均可选择人工指定底价、由 Google 优化、已停用，默认人工；仅人工模式填写 USD 金额。清单粘贴/导入后立即可编辑，支持批量应用、替换或清除名称前缀。请求币种和独立解析/预检按钮已移除，点击开始自动检查账号、清单、锁与执行页。执行方式界面保留，等待后续讨论。
+**当前本地交付版本：v0.5.1。** 修复缺 ID 时误用同名旧记录、停止后仍可能点击创建、主控刷新后丢失结果收集的问题。文案精简建议见 [清单](docs/TEXT-TRIM-PLAN.md)，尚未批量改动。
+
+插屏、开屏、信息流（原生广告）均可选择人工指定底价、由 Google 优化、已停用，默认人工；仅人工模式填写 USD 金额。清单粘贴/导入后立即可编辑，支持批量应用、替换或清除名称前缀。请求币种和独立解析/预检按钮已移除，点击开始自动检查账号、清单、锁与执行页。执行方式界面保留，等待后续讨论。
 
 “历史结果”按当前发布商和应用列出批次，可切换查看、导出和复制；不会替换当前任务。新批次记录开始、结束和完整总耗时，包含自动检查、等待及暂停，旧记录缺失时间显示未知。历史样本失效时改用本批首条核验。新功能的验证范围为本地测试与隔离 Chromium；尚未安装到原 HubVPS 或进行新增格式/模式的真实创建验收。
 
@@ -52,13 +54,13 @@ GitHub 仓库：[Hawkiethehawk/admob-batch-creator](https://github.com/Hawkiethe
 4. 主控是唯一派发者。独立执行页信箱、稳定任务/分配标识、持久化 journal 和 ACK 防止重复消息变成重复提交。账号级提交许可至少间隔 2.5 秒，许可 10 秒过期。
 5. 点击创建前，主控先回读持久化提交意图，执行页再写本地 journal。存在提交意图后，不会自动回到待执行；超时 120 秒暂停派发并保留原归属。
 6. 成功需要广告单元 `/` ID、应用、名称、格式和所选底价模式的保存后读回一致；人工模式还需金额和 USD 一致，页面明确冲突时报告。仅拿到 ID 时保留 ID 并标为配置待核验。`~` App ID 不会当作广告位 ID。
-7. 暂停和停止会停止后续派发并保留结果证据；降级单页保留旧执行页。继续前检查身份与锁，存在待核验项时禁用“继续”。在途刷新、worker 身份恢复以及许可检查到点击间的暂停/停止有已确认源码边界，不能据正常路径宣称完整中断恢复通过，详见适配限制。
+7. 暂停和停止会停止后续派发；实际点击创建前同步复查批次状态、任务归属和许可。主控刷新后恢复原任务的报告收集，并读取匹配的终态 journal。降级单页保留旧执行页；存在待核验项时禁用“继续”。worker 身份恢复及真实环境中断验收范围见适配限制。
 8. 刷新后，只有旧单页实例的不确定项具有完整匹配的填表 journal、无提交意图、无实际结果且无提交许可，才转为明确失败供用户重试；多页和证据缺失不适用。页面等待和休眠计时器在同一页面窗口创建与清理。
 9. CSV 包含中文 BOM、原行、账号/应用、请求/实际配置、ID、状态、原因和时间，并防止 Excel 公式注入。
 
 0.4.9 暂停批次中已有提交意图、尚无 ID 的待核验行，可录入真实成功说明里已观察到的 ID，点击“记录 ID 并核验”。先持久化为未核验，再按原核验流程读取保存详情；该操作不提交、不直接标成功，也不覆盖不同的已知 ID。执行页在 ACK 或报告通信失败后，也会尝试从当前精确匹配的成功说明保留 ID，避免已创建结果因通信异常而丢失。
 
-已知 ID 搜索会等待该精确行最多 20 秒，旧行和旧“共 0 行”不能提前证明缺失。已有 ID 在主控看不到时，确认执行页已结束、报告收齐后，暂停并普通刷新主控恢复缓存，再按 ID 核验，绝不重新提交。在途刷新不属于这项已验证路径。
+已知 ID 搜索会等待该精确行最多 20 秒，旧行和旧“共 0 行”不能提前证明缺失。缺少本次创建 ID 时保持待核验，不通过同名查询绑定旧 ID。主控在途刷新恢复已通过隔离浏览器测试，真实环境验收另行记录。
 
 ## 大清单与多页接入
 
@@ -72,7 +74,7 @@ GitHub 仓库：[Hawkiethehawk/admob-batch-creator](https://github.com/Hawkiethe
 
 ## 本地构建
 
-0.5.0 完整检查通过 **194/194 项测试、类型检查、构建及语法检查**，输出见 [`docs/test-results.txt`](docs/test-results.txt)，隔离浏览器结果见 [`tests/browser-results-0.5.0.json`](tests/browser-results-0.5.0.json)。0.4.14 的 154/154 项原始输出保留在 [`docs/test-results-0.4.14.txt`](docs/test-results-0.4.14.txt)。完整批次、提交意图和结果仍持久化，`latest` 按需写入。本地测试、隔离基准和真实验收分别记录。
+0.5.1 完整检查通过 **215/215 项测试、类型检查、构建及语法检查**，输出见 [`docs/test-results-0.5.1.txt`](docs/test-results-0.5.1.txt)，隔离浏览器结果见 [`tests/browser-results-0.5.1.json`](tests/browser-results-0.5.1.json)。0.5.0 和 0.4.14 的历史验证记录保留。完整批次、提交意图和结果仍持久化，`latest` 按需写入。本地测试、隔离基准和真实验收分别记录。
 
 0.5.0 本地检查使用 Node.js 26.13.1；历史开发环境为 24.17.0。使用项目内锁文件：
 
@@ -85,7 +87,7 @@ npm run build
 
 Windows PowerShell 若因执行策略拒绝 `npm.ps1`，使用对应的 `npm.cmd` 命令即可。
 
-`npm run build` 使用 esbuild 将 TypeScript 打包成单一脚本，不包含远程 `@require`。`npm run test:browser` 使用脱敏页面夹具、模拟 GM 和本机后端，验证九种格式/底价组合、历史导出、跨页锁与单/多页执行；不会访问真实 AdMob。结果默认写入 `tests/browser-results-0.5.0.json`，不覆盖旧基准。
+`npm run build` 使用 esbuild 将 TypeScript 打包成单一脚本，不包含远程 `@require`。`npm run test:browser` 使用脱敏页面夹具、模拟 GM 和本机后端，验证九种格式/底价组合、历史导出、跨页锁、单/多页执行与主控在途刷新；不会访问真实 AdMob。结果默认写入 `tests/browser-results-0.5.1.json`，不覆盖旧基准。
 
 `node scripts/verify.mjs` 执行类型检查、逻辑测试、构建和语法检查并写入 `docs/test-results.txt`。当前 `dist` 保留安装脚本及其 `SHA256SUMS.txt`；旧 ZIP、顶层重复清单和交付说明已归档到 `C:\Users\Administrator\work\admob-workspace-archive-20261113-211044`。需要重新分发时，在本工作根按需运行 `powershell -ExecutionPolicy Bypass -File scripts/package.ps1`，生成项目 ZIP 与 SHA-256 清单；脚本递归包含测试夹具，校验版本、ZIP 内文件路径和安装文件哈希。ZIP 自身哈希只写外部清单，不写入 ZIP 内。
 

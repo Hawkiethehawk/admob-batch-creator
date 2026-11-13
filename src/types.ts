@@ -11,7 +11,7 @@ export interface Adapter {
   identify(): Promise<Identity>;
   lookup(identity: Identity, name: string): Promise<Lookup>;
   prepare(identity: Identity, format: AdFormat, name: string, floor: string, checkpoint: () => Promise<void>, mode?: FloorMode): Promise<void>;
-  submit(): Promise<void>;
+  submit(beforeClick?: () => void): Promise<void>;
   verify(identity: Identity, format: AdFormat, name: string, floor: string, mode?: FloorMode): Promise<Actual>;
   verifyById?(identity: Identity, unitId: string, name: string, format: AdFormat, floor: string, mode?: FloorMode): Promise<Actual>;
   recoverCreatedId?(identity: Identity, name: string, format: AdFormat): string | undefined;

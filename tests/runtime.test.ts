@@ -178,7 +178,7 @@ test('history browsing and exports are read only, scoped by publisher/app, and l
   assert.throws(()=>read(other.id),/未找到/);assert.throws(()=>read(foreign.id),/未找到/);assert.throws(()=>read('../bad'),/无效/);
   assert.deepEqual(f.controller.batch,before);assert.deepEqual(storage,storedBefore);assert.equal(writes.length,0);
 });
-async function permission(batch: Batch): Promise<void> {
+function permission(batch: Batch): void {
   const cmd = GM_getValue<Command>(PREFIX + 'command:worker', { seq: 0 });
   if (cmd.blocked) throw new Error(cmd.blocked);
   if (batch.phase !== 'running') throw new Error('批次暂停，未提交');
@@ -413,18 +413,18 @@ test('success receipt recovery is never attempted for an uncertain task without 
   f.adapter.recoverCreatedId = () => { recovered++; return actual.unitId; };
   f.adapter.lookup = async () => { lookedUp++; return { complete: true, matches: [] }; };
   await f.controller.verify();
-  assert.equal(recovered, 0); assert.equal(lookedUp, 1);
+  assert.equal(recovered, 0); assert.equal(lookedUp, 0);
   assert.equal(f.batch.tasks[0].actual?.unitId, undefined); assert.equal(f.batch.tasks[0].status, 'uncertain');
   assert.equal(f.calls.submit, 0);
 });
 
-test('a submitted uncertain task without an exact receipt keeps its intent and uses conservative lookup', async () => {
+test('a submitted uncertain task without an exact receipt keeps its intent without adopting a name match', async () => {
   const f = fixture(); f.batch.phase = 'paused'; f.slot.busy = undefined;
   const intentAt = new Date().toISOString(); Object.assign(f.batch.tasks[0], { status: 'uncertain', intentAt });
   let lookedUp = 0; f.adapter.recoverCreatedId = () => undefined;
   f.adapter.lookup = async () => { lookedUp++; return { complete: true, matches: [] }; };
   await f.controller.verify();
-  assert.equal(lookedUp, 1); assert.equal(f.batch.tasks[0].status, 'uncertain'); assert.equal(f.batch.tasks[0].actual?.unitId, undefined);
+  assert.equal(lookedUp, 0); assert.equal(f.batch.tasks[0].status, 'uncertain'); assert.equal(f.batch.tasks[0].actual?.unitId, undefined);
   assert.equal(f.batch.tasks[0].intentAt, intentAt); assert.equal(f.batch.tasks[0].assignmentId, 'assignment');
   assert.equal(f.calls.prepare, 0); assert.equal(f.calls.submit, 0);
 });
@@ -1057,4 +1057,125 @@ test('paused preflight caps warming at concurrency and opens no page while a res
   await f.controller.preflight(config);
   assert.equal(pages.length, 5, 'six pending rows require at most the configured five pages');
   assert.deepEqual(f.batch, before); assert.equal(f.calls.submit, 0);
+});
+
+test('a same-name old unit cannot resolve an unknown created ID or enter the success export', async () => {
+  const f=fixture();f.batch.phase='paused';f.slot.busy=undefined;
+  Object.assign(f.batch.tasks[0],{status:'uncertain',intentAt:new Date().toISOString()});
+  let lookups=0;
+  f.adapter.lookup=async()=>{lookups++;return {complete:true,matches:[clone(actual)]};};
+  await f.controller.verify();await f.controller.tick();
+  assert.equal(lookups,0);assert.equal(f.batch.tasks[0].actual,undefined);
+  assert.equal(f.batch.tasks[0].status,'uncertain');assert.equal(f.batch.phase,'paused');
+  assert.ok(!exportCsv(f.batch,'success').includes(actual.unitId));
+  await assert.rejects(()=>f.controller.resume(),/待核验/);
+  const received:Data[]=[];
+  await performJob({...f.job,kind:'verify',task:clone(f.batch.tasks[0])},f.adapter,async r=>{received.push(r);},()=>{});
+  assert.equal(received[0].status,'uncertain');assert.equal(received[0].actual,undefined);
+  assert.equal(lookups,0);assert.equal(f.calls.submit,0);
+});
+
+function restoredController(f:ReturnType<typeof fixture>):Controller{
+  const restored=new Controller(f.adapter);
+  restored.panel={update:()=>{}} as unknown as PanelHandle;
+  restored.identity=clone(identity);restored.lockRelease=()=>{};restored.lockedPublisher=identity.publisherId;
+  return restored;
+}
+
+test('controller refresh collects a late created ID and terminal result without redispatching', async()=>{
+  const f=fixture();Object.assign(f.batch.tasks[0],{status:'submitting',intentAt:new Date().toISOString()});f.controller.save();
+  const restored=restoredController(f);await restored.load();
+  assert.equal(restored.slots.get('worker')?.busy,'assignment');
+  const created=report(f.job,{type:'stage',stage:'created',actual:{...actual,verified:false}});
+  GM_setValue(PREFIX+'report:worker',created);await restored.tick();
+  assert.equal(restored.batch!.tasks[0].actual?.unitId,actual.unitId);
+  assert.equal(restored.batch!.tasks[0].actual?.verified,false);
+  const done=report(f.job,{type:'result',status:'success',actual:clone(actual)});
+  GM_setValue(PREFIX+'report:worker',done);await restored.tick();
+  assert.equal(restored.batch!.tasks[0].status,'success');assert.equal(restored.batch!.phase,'done');
+  assert.equal(restored.slots.get('worker')?.busy,undefined);
+  assert.equal(GM_getValue<Command>(PREFIX+'command:worker').ack,done.id);
+  assert.equal(f.calls.prepare,0);assert.equal(f.calls.submit,0);
+});
+
+test('refresh and polling recover a terminal journal even when its mailbox write failed',async t=>{
+  for(const execution of ['tabs','single'] as const)await t.test(execution,async()=>{
+    const f=fixture();f.batch.execution=execution;
+    const worker=execution==='single'?'single:old-controller':'worker';
+    const task=f.batch.tasks[0];Object.assign(task,{workerId:worker,status:'submitting',intentAt:new Date().toISOString()});
+    f.job.workerId=worker;f.job.task=clone(task);
+    GM_setValue(PREFIX+'command:'+worker,{seq:1,job:f.job} satisfies Command);f.controller.save();
+    const done=report(f.job,{type:'result',status:'success',actual:clone(actual)});
+    GM_setValue(PREFIX+'journal:assignment',{assignmentId:'assignment',taskId:task.id,batchId:f.batch.id,state:'done',report:done} satisfies Journal);
+    const restored=restoredController(f);await restored.load();await restored.tick();
+    assert.equal(restored.batch!.tasks[0].status,'success');assert.equal(restored.batch!.tasks[0].actual?.unitId,actual.unitId);
+    assert.equal(GM_getValue<Command>(PREFIX+'command:'+worker).ack,done.id);
+    const logs=restored.batch!.tasks[0].logs.length;await restored.tick();
+    assert.equal(restored.batch!.tasks[0].logs.length,logs);
+    assert.equal(restored.slots.get(worker)?.busy,undefined);assert.equal(f.calls.submit,0);
+  });
+});
+
+test('journal polling recovers a result persisted after the controller was restored',async()=>{
+  const f=fixture();Object.assign(f.batch.tasks[0],{status:'submitting',intentAt:new Date().toISOString()});f.controller.save();
+  const restored=restoredController(f);await restored.load();
+  const done=report(f.job,{type:'result',status:'success',actual:clone(actual)});
+  GM_setValue(PREFIX+'journal:assignment',{assignmentId:'assignment',taskId:f.job.task.id,batchId:f.batch.id,state:'done',report:done} satisfies Journal);
+  await restored.tick();assert.equal(restored.batch!.tasks[0].status,'success');assert.equal(f.calls.submit,0);
+});
+
+test('recovered journals must match the batch, task, assignment and reporting worker',async t=>{
+  for(const field of ['batchId','taskId','assignmentId','workerId'] as const)await t.test(field,async()=>{
+    const f=fixture();Object.assign(f.batch.tasks[0],{status:'submitting',intentAt:new Date().toISOString()});f.controller.save();
+    const done=report(f.job,{type:'result',status:'success',actual:clone(actual)});
+    const journal:Journal={assignmentId:'assignment',taskId:f.job.task.id,batchId:f.batch.id,state:'done',report:done};
+    if(field==='workerId')done.workerId='other-worker';else journal[field]='other';
+    GM_setValue(PREFIX+'journal:assignment',journal);
+    const restored=restoredController(f);await restored.load();await restored.tick();
+    assert.equal(restored.batch!.tasks[0].status,'uncertain');assert.equal(restored.batch!.tasks[0].actual,undefined);
+  });
+});
+
+test('a refreshed filling worker keeps ownership until it returns a definite pre-submit failure',async()=>{
+  const f=fixture();f.batch.tasks[0].status='filling';f.controller.save();
+  const restored=restoredController(f);await restored.load();
+  assert.equal(restored.batch!.tasks[0].status,'uncertain');
+  await assert.rejects(()=>restored.retry(),/尚未收齐/);
+  GM_setValue(PREFIX+'report:worker',report(f.job,{type:'error',status:'failed',reason:'旧主控归属已失效，未提交'}));
+  await restored.tick();await restored.retry();
+  assert.equal(restored.batch!.tasks[0].status,'pending');assert.equal(restored.batch!.tasks[0].assignmentId,undefined);
+  assert.equal(f.calls.submit,0);
+});
+
+test('already acknowledged terminal journals do not trap a restored worker as busy',async()=>{
+  const f=fixture();Object.assign(f.batch.tasks[0],{status:'uncertain',intentAt:new Date().toISOString()});
+  const done=report(f.job,{type:'error',status:'uncertain',reason:'结果待核验'});
+  GM_setValue(PREFIX+'journal:assignment',{assignmentId:'assignment',taskId:f.job.task.id,batchId:f.batch.id,state:'done',report:done} satisfies Journal);
+  GM_setValue(PREFIX+'command:worker',{seq:2,job:f.job,ack:done.id} satisfies Command);f.controller.save();
+  const restored=restoredController(f);await restored.load();
+  assert.equal(restored.slots.get('worker')?.busy,undefined);assert.equal(restored.batch!.tasks[0].status,'uncertain');
+});
+
+test('single-page execution rechecks stop, pause, ownership and grant at the adapter click boundary',async t=>{
+  for(const fault of ['stop','pause','owner','assignment','expired-grant'] as const)await t.test(fault,async()=>{
+    const f=fixture();f.batch.execution='single';f.controller.slots.clear();
+    const task=f.batch.tasks[0];delete task.assignmentId;delete task.workerId;
+    let finish!:()=>void;const finished=new Promise<void>(resolve=>{finish=resolve;});
+    f.adapter.submit=async guard=>{
+      assert.equal(typeof guard,'function');
+      if(fault==='stop')await f.controller.stop();
+      if(fault==='pause')await f.controller.pause('test');
+      if(fault==='owner'){const saved=GM_getValue<Batch>(key(f.batch));saved.controllerId='replacement';GM_setValue(key(f.batch),saved);}
+      if(fault==='assignment' || fault==='expired-grant'){
+        const k=PREFIX+'command:'+task.workerId;const command=GM_getValue<Command>(k);
+        if(fault==='assignment')command.job!.assignmentId='other';else command.grant!.expires=Date.now();
+        GM_setValue(k,command);
+      }
+      guard!();f.calls.submit++;
+    };
+    const handle=f.controller.handle.bind(f.controller);
+    f.controller.handle=async(slot,r)=>{await handle(slot,r);if(['result','error'].includes(r.type))finish();};
+    await f.controller.dispatch({id:'single:'+f.controller.id,since:Date.now()},task);await finished;
+    assert.equal(f.calls.submit,0);assert.equal(task.status,'uncertain');assert.ok(task.intentAt);
+  });
 });

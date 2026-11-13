@@ -50,6 +50,17 @@ export class Controller {
   private removeSlot(id:string):void{
     this.slots.get(id)?.removeReportListener?.();this.slots.delete(id);
   }
+  private savedReport(slot:Slot):Report|undefined{
+    const assignment=slot.busy || get<Command>('command:'+slot.id,{seq:0}).job?.assignmentId;
+    const task=this.batch?.tasks.find(task=>task.assignmentId===assignment && task.workerId===slot.id);
+    if(task){
+      const journal=get<Journal|undefined>('journal:'+assignment,undefined);
+      if(journal?.state==='done' && journal.batchId===this.batch!.id && journal.taskId===task.id
+        && journal.assignmentId===assignment && journal.report && reportBelongs(journal.report,task,slot.id)
+        && ['result','error'].includes(journal.report.type))return journal.report;
+    }
+    return get<Report|undefined>('report:'+slot.id,undefined);
+  }
   notice(text:string):void{this.panel.update({notice:text});}
   requireBatch():void{if(!this.batch)throw new Error('当前没有批次，请填写清单后开始创建');}
   key(batch=this.batch!):string{return 'batch:'+batch.identity.publisherId+':'+batch.identity.appId+':'+batch.id;}
@@ -100,6 +111,7 @@ export class Controller {
     await this.acquire();this.batch=batch;batch.controllerId=this.id;
     if(batch.phase!=='done')batch.phase=batch.stopRequestedAt?'stopping':batch.confirmedAt?'paused':'draft';
     for(const task of batch.tasks){
+      const remote=!!task.workerId && !task.workerId.startsWith('single:');
       if(batch.phase!=='done' && batch.execution==='single' && task.status==='uncertain' && !task.intentAt && !task.actual
         && task.assignmentId && task.workerId?.startsWith('single:') && task.workerId!=='single:'+this.id){
         const journal=get<Journal|undefined>('journal:'+task.assignmentId,undefined);
@@ -110,12 +122,23 @@ export class Controller {
           transition(task,'failed','旧单页实例已结束，匹配的填表记录无提交意图、结果或许可；确认未提交，可手动重试');
         }
       }
-      if(['filling','submitting','verifying'].includes(task.status))recoverTask(task);
-      if(batch.phase!=='done' && task.assignmentId && task.workerId && ['filling','submitting','verifying'].includes(task.status)){
+      if(batch.phase!=='done' && remote && task.status==='filling')transition(task,'uncertain','主控已刷新，等待原执行页报告');
+      else if(['filling','submitting','verifying'].includes(task.status))recoverTask(task);
+      const journal=task.assignmentId?get<Journal|undefined>('journal:'+task.assignmentId,undefined):undefined;
+      const completed=journal?.state==='done' && journal.batchId===batch.id && journal.taskId===task.id
+        && journal.assignmentId===task.assignmentId && !!journal.report && reportBelongs(journal.report,task,task.workerId || '')
+        && ['result','error'].includes(journal.report.type);
+      if(batch.phase!=='done' && task.assignmentId && task.workerId && !['success','exists','stopped','conflict'].includes(task.status)
+        && (remote || completed)){
         this.addSlot({id:task.workerId,busy:task.assignmentId,since:Date.now()});
       }
     }
-    this.save();this.notice(batch.phase==='draft'?'已恢复未确认草稿。检查清单后点击开始创建，将自动检查执行条件。':batch.phase==='done'?'已恢复已结束批次，可查看历史结果或填写新清单。':'已恢复历史批次并暂停。提交过或结果不确定的任务只允许先核验；点击继续才会派发尚未提交的任务。');
+    this.save();
+    for(const slot of this.slots.values()){
+      const report=this.savedReport(slot);
+      if(report && ['result','error'].includes(report.type))await this.handle(slot,report);
+    }
+    this.notice(batch.phase==='draft'?'已恢复未确认草稿。检查清单后点击开始创建，将自动检查执行条件。':batch.phase==='done'?'已恢复已结束批次，可查看历史结果或填写新清单。':'已恢复历史批次并暂停。提交过或结果不确定的任务只允许先核验；点击继续才会派发尚未提交的任务。');
   }
   signature(config:PanelConfig):string{return JSON.stringify([config.format,config.mode ?? 'manual',config.concurrency,config.execution,config.rows,this.identity?.publisherId,this.identity?.appId]);}
   private async warmPool(target:number):Promise<void>{
@@ -320,6 +343,10 @@ export class Controller {
         }else transition(task,'created-unverified','已取得 ID，保存后配置未完整核验');
         this.save();continue;
       }
+      if(!knownId){
+        transition(task,'uncertain','缺少本次创建的广告位 ID，请保留原执行页或录入成功说明中的 ID 后核验');
+        this.save();continue;
+      }
       const lookup=await this.adapter.lookup(this.batch!.identity,task.name);
       const c=classifyLookup(lookup,this.batch!.identity,this.batch!.format,task.name,task.floor,this.batch!.mode);
       if(c.status==='exists'){
@@ -359,11 +386,14 @@ export class Controller {
       this.localBusy=true;
       void performJob(job,this.adapter,async data=>{
         await this.handle(slot,{...data,id:uuid(),at:Date.now(),workerId:slot.id});
-      },async()=>{
+      },(beforeClick)=>{
         if(this.batch?.phase!=='running')throw new Error('任务已暂停或停止，在提交前安全停下');
+        const control=get<Batch|undefined>(this.key(batch),undefined);
         const command=get<Command>('command:'+slot.id,{seq:0});
+        if(!control || control.controllerId!==job.batch.controllerId || command.job?.assignmentId!==job.assignmentId)throw new Error('任务归属已变更，停止当前执行');
+        if(control.phase!=='running')throw new Error('任务已暂停或停止，在提交前安全停下');
         if(command.blocked)throw new Error(command.blocked);
-        if(task.intentAt && (!command.grant || command.grant.expires<Date.now()))throw new Error('提交许可已过期，未点击创建');
+        if((beforeClick || task.intentAt) && (!command.grant || command.grant.assignmentId!==job.assignmentId || command.grant.expires<=Date.now()))throw new Error('提交许可已过期，未点击创建');
       }).catch(e=>this.pause('单页通信或存储异常：'+(e as Error).message)).finally(()=>{this.localBusy=false;});
     }
   }
@@ -371,7 +401,11 @@ export class Controller {
     const task=this.batch?.tasks.find(t=>t.assignmentId===r.assignmentId);
     if(!task || !reportBelongs(r,task,slot.id) || slot.lastReport===r.id)return;
     const cmd=get<Command>('command:'+slot.id,{seq:0});
-    if(cmd.ack===r.id){slot.lastReport=r.id;return;}
+    if(cmd.ack===r.id){
+      slot.lastReport=r.id;
+      if(['result','error'].includes(r.type) && slot.busy===r.assignmentId)slot.busy=undefined;
+      return;
+    }
     if(['success','exists'].includes(task.status)){
       // A stale frozen page may report after the controller has independently
       // verified and revoked its assignment. Acknowledge without replacing proof.
@@ -417,7 +451,7 @@ export class Controller {
     this.tickBusy=true;
     try{
       for(const slot of this.slots.values()){
-        const r=get<Report|undefined>('report:'+slot.id,undefined);
+        const r=this.savedReport(slot);
         if(r && r.id!==slot.lastReport && r.type!=='hello')await this.handle(slot,r);
         if(slot.busy && Date.now()-slot.since>120000){
           const t=this.batch.tasks.find(t=>t.assignmentId===slot.busy);
@@ -449,7 +483,7 @@ export class Controller {
       if(canDispatch(this.batch,busy)){
         const task=this.batch.tasks.find(t=>t.status==='pending' && !t.assignmentId && Date.now()-Date.parse(t.logs.at(-1)?.at || this.batch!.createdAt)>Math.max(0,t.attempts-1)*3000);
         if(task){
-          let slot=[...this.slots.values()].find(s=>!s.busy && (this.batch!.execution==='single'?s.id.startsWith('single:'):(s.probePassed && s.batchId===this.batch!.id && !!s.identity && sameIdentity(s.identity,this.batch!.identity))) && !s.tab?.closed);
+          let slot=[...this.slots.values()].find(s=>!s.busy && (this.batch!.execution==='single'?s.id==='single:'+this.id:(s.probePassed && s.batchId===this.batch!.id && !!s.identity && sameIdentity(s.identity,this.batch!.identity))) && !s.tab?.closed);
           if(!slot){
             if(this.batch.execution==='single'){slot={id:'single:'+this.id,since:Date.now()};this.addSlot(slot);}
             else slot=await this.probe();
