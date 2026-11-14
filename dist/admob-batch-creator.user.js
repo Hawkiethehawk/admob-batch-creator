@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AdMob Batch Creator
 // @namespace    local.admob-batch-creator
-// @version      0.5.1
+// @version      0.5.2
 // @description  中文 AdMob 插屏/开屏/信息流批量创建、三种底价模式、历史批次与核验导出
 // @match        https://admob.google.com/*
 // @match        https://apps.admob.com/*
@@ -339,6 +339,13 @@
     }
   };
   var txt = (e) => (e?.textContent ?? "").replace(/\s+/g, " ").trim();
+  function fieldText(element2, preserveWhitespace = false) {
+    if (!element2) return "";
+    const copy = element2.cloneNode(true);
+    for (const icon of copy.querySelectorAll("help-tooltip-icon, material-icon, .material-icons, .material-icons-extended")) icon.remove();
+    const value = copy.textContent || "";
+    return (preserveWhitespace ? value : value.replace(/\s+/g, " ")).trim();
+  }
   var compact = (s) => s.replace(/[：:\s]/g, "");
   var sameLabel = (s, labels) => labels.some((x) => compact(s) === compact(x));
   var containsLabel = (s, labels) => labels.some((x) => compact(s).includes(compact(x)));
@@ -452,7 +459,7 @@
     if (selectedNames.length > 1) throw new AdapterError("IDENTITY", "侧栏出现多个选中的应用，无法确认当前应用");
     const primary = [];
     for (const el of doc.querySelectorAll("span.primary-label")) {
-      const value = txt(el);
+      const value = fieldText(el, true);
       if (value && !/^(AdMob|首页|应用|报告|中介|广告系列|政策中心)$/.test(value)) primary.push(value);
     }
     const primaryNames = [...new Set(primary.filter(Boolean))];
@@ -698,7 +705,7 @@
     rowInfo(row) {
       const cell = row.querySelector('ess-cell[essfield="ad-unit-with-id-info"]');
       const link = cell?.querySelector('a[href*="/adunits/"]');
-      const name = txt(link) || txt(cell?.querySelector("ad-unit-with-id-cell")?.firstElementChild || null);
+      const name = fieldText(link, true) || fieldText(cell?.querySelector("ad-unit-with-id-cell")?.firstElementChild, true);
       const unitId = txt(cell).match(ANY_UNIT_RX)?.[0];
       const formatText = txt(row.querySelector('ess-cell[essfield="ad-unit-format"]'));
       if (!name || !unitId) return void 0;
@@ -723,7 +730,7 @@
       };
       const add = (element2, explicitlyReferenced = false) => {
         if (!element2 || !(visible(element2) || explicitlyReferenced && readableReferencedDescription(element2))) return;
-        const value = txt(element2).replace(/help_outline/g, "").trim();
+        const value = fieldText(element2, label === "广告单元名称");
         if (!value) return;
         if (label === "广告单元 ID") {
           const ids = [...new Set(value.match(/ca-app-pub-\d{16}\/\d{10}/g) || [])];
@@ -1273,6 +1280,10 @@
   function canDispatch(batch, busy) {
     return batch.phase === "running" && busy < (batch.canaryPassed ? batch.concurrency : 1);
   }
+  function canRecoverUnsubmitted(job, batch, command, journal) {
+    const task = batch.tasks.find((task2) => task2.id === job.task.id);
+    return job.kind === "create" && batch.id === job.batch.id && batch.identity.publisherId === job.batch.identity.publisherId && batch.identity.appId === job.batch.identity.appId && command.job?.assignmentId === job.assignmentId && command.job.workerId === job.workerId && !!task && task.assignmentId === job.assignmentId && task.workerId === job.workerId && ["pending", "filling", "uncertain"].includes(task.status) && !task.intentAt && !task.actual && !command.grant && journal?.state === "filling" && journal.assignmentId === job.assignmentId && journal.taskId === task.id && journal.batchId === batch.id;
+  }
 
   // src/panel.ts
   var STYLE = `
@@ -1328,7 +1339,9 @@
     let localBusy = false;
     let inputRows = [];
     const sourceIssues = /* @__PURE__ */ new WeakMap();
+    const nameOnlyHeaders = /* @__PURE__ */ new WeakSet();
     const prefixBases = /* @__PURE__ */ new WeakMap();
+    let confirmedIdentity;
     let renderedBatch = "";
     let restoredBatchId = "";
     let lastBatchPhase = "";
@@ -1420,7 +1433,11 @@
       modeNote.textContent = execution.value === "single" ? "单页模式只操作当前页面；仍需可靠的主控互斥。" : "先核验首条，再扩展并发；这是插件配置，并非 AdMob 官方额度。";
     });
     mode.addEventListener("change", () => {
-      if (mode.value !== "manual") for (const row of inputRows) sourceIssues.set(row, (sourceIssues.get(row) ?? []).filter((error) => !/应为两列，实际为 1 列/.test(error)));
+      if (mode.value !== "manual") {
+        inputRows = inputRows.filter((row) => !nameOnlyHeaders.has(row));
+        for (const row of inputRows) sourceIssues.set(row, (sourceIssues.get(row) ?? []).filter((error) => !/应为两列，实际为 1 列/.test(error)));
+        syncPaste();
+      }
       invalidate();
       renderRows();
     });
@@ -1510,7 +1527,11 @@
     confirm.type = "checkbox";
     confirmLabel.append(confirm, element("span", "我已核对当前发布商、应用、广告格式、底价模式和创建清单；点击“开始创建”确认整个批次。"));
     runSection.append(confirmLabel);
-    confirm.addEventListener("change", updateControls);
+    confirm.addEventListener("change", () => {
+      confirmedIdentity = confirm.checked ? displayedIdentity() : void 0;
+      if (!confirmedIdentity) confirm.checked = false;
+      updateControls();
+    });
     const runActions = element("div", void 0, "actions");
     runActions.append(button("start", "开始创建", () => actions.start(getConfig()), "primary"), button("pause", "暂停", actions.pause), button("resume", "继续", actions.resume), button("stop", "停止", actions.stop, "danger"));
     const recoveryActions = element("div", void 0, "actions spacer");
@@ -1526,7 +1547,7 @@
     historySelect.setAttribute("aria-label", "任务批次");
     historySelect.append(option("", "当前任务"));
     historySelect.addEventListener("change", () => {
-      confirm.checked = false;
+      clearConfirmation();
       if (actions.viewHistory) void invoke(() => actions.viewHistory(historySelect.value));
     });
     historyRow.append(element("span", "历史结果"), historySelect);
@@ -1557,6 +1578,7 @@
     const rowNodes = [];
     function parsedRows(text) {
       const rows = parseInput(text, { mode: mode.value });
+      if (mode.value === "manual" && rows.length && parseInput(text, { mode: "auto" }).length === rows.length - 1) nameOnlyHeaders.add(rows[0]);
       for (const row of rows) sourceIssues.set(row, row.errors.filter((error) => /实际为|引号/.test(error)));
       return rows;
     }
@@ -1636,6 +1658,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         for (const [input, field] of [[nameInput, "name"], [floorInput, "floor"]]) {
           input.addEventListener("input", () => {
             row[field] = input.value;
+            nameOnlyHeaders.delete(row);
             if (field === "name") prefixBases.delete(row);
             syncPaste();
             invalidate();
@@ -1662,12 +1685,21 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
     }
     function getConfig() {
       validateRows();
-      return { format: format.value, mode: mode.value, concurrency: execution.value === "single" ? 1 : Number(concurrency.value), execution: execution.value, text: serializeRows(), rows: structuredClone(inputRows) };
+      return { format: format.value, mode: mode.value, concurrency: execution.value === "single" ? 1 : Number(concurrency.value), execution: execution.value, text: serializeRows(), rows: structuredClone(inputRows), confirmedIdentity: confirmedIdentity ? { ...confirmedIdentity } : void 0 };
+    }
+    function displayedIdentity() {
+      const identity = state.identity;
+      if (state.identityError || !identity || !/^pub-\d{16}$/.test(identity.publisherId) || !/^ca-app-pub-\d{16}~\d{10}$/.test(identity.appId) || !identity.appId.startsWith(`ca-app-${identity.publisherId}~`)) return void 0;
+      return { publisherId: identity.publisherId, appId: identity.appId };
+    }
+    function clearConfirmation() {
+      confirm.checked = false;
+      confirmedIdentity = void 0;
     }
     function invalidate() {
       state.ready = false;
       state.checks = [];
-      confirm.checked = false;
+      clearConfirmation();
       renderChecks();
       updateControls();
     }
@@ -1688,13 +1720,14 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         nodes.floor.disabled = busy || frozen;
         nodes.remove.disabled = busy || frozen;
       });
-      confirm.disabled = busy || frozen;
+      const identity = displayedIdentity();
+      confirm.disabled = busy || frozen || !identity;
       Object.values(buttons).forEach((b) => {
         b.disabled = busy;
       });
       historySelect.disabled = busy;
       const valid = inputRows.length > 0 && inputRows.every((row) => !row.errors.length);
-      buttons.start.disabled = busy || frozen || !valid || !confirm.checked;
+      buttons.start.disabled = busy || frozen || !valid || !confirm.checked || !identity || !confirmedIdentity || confirmedIdentity.publisherId !== identity.publisherId || confirmedIdentity.appId !== identity.appId;
       buttons.pause.disabled = busy || batch?.phase !== "running";
       const unresolved = batch?.tasks.filter((t) => needsVerification(t) && !["success", "exists"].includes(t.status)).length ?? 0;
       const resumeBlocked = batch?.phase === "paused" && unresolved > 0;
@@ -1822,9 +1855,11 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
     return {
       getConfig,
       update(patch) {
+        const previousIdentity = confirmedIdentity ?? state.identity;
+        if (patch.identityError || "identity" in patch && (patch.identity?.publisherId !== previousIdentity?.publisherId || patch.identity?.appId !== previousIdentity?.appId)) clearConfirmation();
         if (patch.batch) {
           const phase = `${patch.batch.id}:${patch.batch.phase}`;
-          if (phase !== lastBatchPhase && patch.batch.phase !== "draft") confirm.checked = false;
+          if (phase !== lastBatchPhase && patch.batch.phase !== "draft") clearConfirmation();
           lastBatchPhase = phase;
         }
         Object.assign(state, patch);
@@ -1890,6 +1925,30 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         }
         return new Promise((release) => resolve(release));
       }).catch(reject);
+    });
+  }
+  async function serializeSubmission(publisherId, submit) {
+    if (!navigator.locks) throw new Error("当前环境不支持 Web Locks，无法保证账号提交间隔；已禁用创建");
+    await navigator.locks.request("admob-batch-submit:" + publisherId, { mode: "exclusive" }, async () => {
+      const clockKey = "lastClick:" + publisherId;
+      const previous = get(clockKey, void 0);
+      const last = previous?.pending ? Date.now() : previous?.at;
+      const delay = last === void 0 ? 0 : Math.max(0, 2500 - (Date.now() - last));
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+      let armed = false;
+      try {
+        await submit(() => {
+          set(clockKey, { at: Date.now(), pending: true });
+          armed = true;
+        });
+      } finally {
+        if (armed) {
+          try {
+            set(clockKey, { at: Date.now(), pending: false });
+          } catch {
+          }
+        }
+      }
     });
   }
   async function lockUnavailable(name) {
@@ -2014,12 +2073,17 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       await adapter.prepare(batch.identity, batch.format, task.name, task.floor, checkpoint, batch.mode ?? task.mode ?? "manual");
       await report({ type: "stage", stage: "filling", reason: "表单已读回，等待提交许可" });
       await checkpoint();
-      intent = true;
-      await report({ type: "intent" });
-      await checkpoint();
-      set(journalKey, { assignmentId, taskId: task.id, batchId: batch.id, state: "intent" });
-      intent = true;
-      await adapter.submit(() => permission(true));
+      await serializeSubmission(batch.identity.publisherId, async (recordClick) => {
+        await checkpoint();
+        intent = true;
+        await report({ type: "intent" });
+        await checkpoint();
+        set(journalKey, { assignmentId, taskId: task.id, batchId: batch.id, state: "intent" });
+        await adapter.submit(() => {
+          permission(true);
+          recordClick();
+        });
+      });
       await report({ type: "stage", stage: "verifying" });
       if (adapter.waitForUnitId) {
         const createdId = await adapter.waitForUnitId().catch(() => void 0);
@@ -2098,7 +2162,22 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       if (!cmd.job || seen === cmd.job.assignmentId) return;
       const job = cmd.job;
       const batch = get("batch:" + job.batch.identity.publisherId + ":" + job.batch.identity.appId + ":" + job.batch.id, void 0);
-      if (!batch || batch.controllerId !== job.batch.controllerId || !["running", "paused", "stopping"].includes(batch.phase)) return;
+      if (!batch || !["running", "paused", "stopping"].includes(batch.phase)) return;
+      if (batch.controllerId !== job.batch.controllerId) {
+        const journal = get("journal:" + job.assignmentId, void 0);
+        if (!canRecoverUnsubmitted(job, batch, cmd, journal)) return;
+        seen = job.assignmentId;
+        running = true;
+        activeJob = job;
+        try {
+          await emit({ type: "error", assignmentId: job.assignmentId, taskId: job.task.id, status: "failed", reason: "旧主控已恢复，执行页的匹配填表记录无提交意图、结果或许可；确认未提交，等待手动重试" });
+        } catch (e) {
+          status.textContent = "执行页通信中断：" + e.message + "。保持此页，返回主控恢复核验。";
+        } finally {
+          running = false;
+        }
+        return;
+      }
       seen = job.assignmentId;
       running = true;
       activeJob = job;
@@ -2276,7 +2355,14 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       }
     }
     async identify() {
-      const identity = await this.adapter.identify();
+      let identity;
+      try {
+        identity = await this.adapter.identify();
+      } catch (error) {
+        this.preflightSignature = "";
+        this.panel.update({ identityError: error.message, ready: false });
+        throw error;
+      }
       if (this.batch && !sameIdentity(identity, this.batch.identity) && this.batch.phase !== "done") await this.pause("主控账号或应用已切换；批次保留在原账号和应用");
       this.identity = identity;
       this.panel.update({ identity, identityError: "" });
@@ -2334,6 +2420,13 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
     signature(config) {
       return JSON.stringify([config.format, config.mode ?? "manual", config.concurrency, config.execution, config.rows, this.identity?.publisherId, this.identity?.appId]);
     }
+    checkConfirmedIdentity(config) {
+      if (!config.confirmedIdentity || !this.identity || !sameIdentity(config.confirmedIdentity, this.identity)) {
+        this.preflightSignature = "";
+        this.panel.update({ ready: false });
+        throw new Error("当前账号或应用与整批确认不一致，请核对当前页面并重新勾选确认后开始");
+      }
+    }
     async warmPool(target) {
       const ready = [...this.slots.values()].filter((slot) => !slot.busy && slot.probePassed && !slot.tab?.closed && slot.batchId === this.batch?.id && slot.identity && this.identity && sameIdentity(slot.identity, this.identity)).length;
       for (let index = ready; index < target; index++) {
@@ -2369,6 +2462,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       }
       this.notice("预检：确认当前账号、主控锁和输入…");
       await this.identify();
+      if (config.confirmedIdentity) this.checkConfirmedIdentity(config);
       await this.acquire();
       const active = get("active:" + this.identity.publisherId, void 0);
       if (active && active.id !== this.batch?.id) {
@@ -2459,9 +2553,11 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
     async start(config) {
       const requestedAt = (/* @__PURE__ */ new Date()).toISOString();
       if (this.batch && !["draft", "done"].includes(this.batch.phase)) throw new Error("当前批次尚未结束，请使用暂停、继续或停止");
+      this.checkConfirmedIdentity(config);
       if (!this.batch || this.batch.phase !== "draft" || this.preflightSignature !== this.signature(config)) await this.preflight(config);
       this.requireBatch();
       await this.identify();
+      this.checkConfirmedIdentity(config);
       await this.acquire();
       if (this.batch.phase !== "draft" || this.preflightSignature !== this.signature(config)) throw new Error("输入或账号已变化，请检查清单后重新点击开始创建");
       this.batch.startedAt = requestedAt;
@@ -2558,16 +2654,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         for (const task of tasks) {
           if (task.status !== "verifying") transition(task, "verifying", "只读核验平台真实结果");
           try {
-            let knownId = task.actual?.unitId;
-            if (!knownId && task.intentAt && this.adapter.recoverCreatedId) {
-              const recovered = this.adapter.recoverCreatedId(this.batch.identity, task.name, this.batch.format);
-              if (recovered) {
-                if (!/^ca-app-pub-\d{16}\/\d{10}$/.test(recovered) || !recovered.startsWith(`ca-app-${this.batch.identity.publisherId}/`)) throw new Error("成功说明中的广告位 ID 与批次发布商不匹配，保留待核验");
-                task.actual = { ...task.actual, unitId: recovered, publisherId: this.batch.identity.publisherId, appId: this.batch.identity.appId, name: task.name, format: this.batch.format, verified: false };
-                this.save();
-                knownId = recovered;
-              }
-            }
+            const knownId = task.actual?.unitId;
             if (knownId && this.adapter.verifyById) {
               const actual = await this.adapter.verifyById(this.batch.identity, knownId, task.name, this.batch.format, task.floor, this.batch.mode);
               if (actual.unitId !== knownId) {

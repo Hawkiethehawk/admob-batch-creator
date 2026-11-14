@@ -54,6 +54,15 @@ export class AdapterError extends Error {
   }
 }
 const txt = (e: Node | null | undefined): string => (e?.textContent ?? '').replace(/\s+/g, ' ').trim();
+function fieldText(element: Element | null | undefined, preserveWhitespace = false): string {
+  if (!element) return '';
+  const copy = element.cloneNode(true) as Element;
+  // Icon ligatures are UI decoration, but the same text can be part of a
+  // legitimate name. Remove only explicit icon nodes, never name substrings.
+  for (const icon of copy.querySelectorAll('help-tooltip-icon, material-icon, .material-icons, .material-icons-extended')) icon.remove();
+  const value = copy.textContent || '';
+  return (preserveWhitespace ? value : value.replace(/\s+/g, ' ')).trim();
+}
 const compact = (s: string): string => s.replace(/[：:\s]/g, '');
 const sameLabel = (s: string, labels: string[]): boolean => labels.some((x) => compact(s) === compact(x));
 const containsLabel = (s: string, labels: string[]): boolean => labels.some((x) => compact(s).includes(compact(x)));
@@ -209,7 +218,7 @@ function appNameFromPage(doc: Document): string {
   if (selectedNames.length > 1) throw new AdapterError('IDENTITY', '侧栏出现多个选中的应用，无法确认当前应用');
   const primary: string[] = [];
   for (const el of doc.querySelectorAll('span.primary-label')) {
-    const value = txt(el);
+    const value = fieldText(el, true);
     if (value && !/^(AdMob|首页|应用|报告|中介|广告系列|政策中心)$/.test(value)) primary.push(value);
   }
   const primaryNames = [...new Set(primary.filter(Boolean))];
@@ -427,7 +436,7 @@ export class AdMobAdapter implements Adapter {
   private rowInfo(row: Element): { name: string; unitId: string; format?: AdFormat; href?: string } | undefined {
     const cell = row.querySelector('ess-cell[essfield="ad-unit-with-id-info"]');
     const link = cell?.querySelector('a[href*="/adunits/"]') as HTMLAnchorElement | null;
-    const name = txt(link) || txt(cell?.querySelector('ad-unit-with-id-cell')?.firstElementChild || null);
+    const name = fieldText(link, true) || fieldText(cell?.querySelector('ad-unit-with-id-cell')?.firstElementChild, true);
     const unitId = txt(cell).match(ANY_UNIT_RX)?.[0];
     const formatText = txt(row.querySelector('ess-cell[essfield="ad-unit-format"]'));
     if (!name || !unitId) return undefined;
@@ -457,7 +466,7 @@ export class AdMobAdapter implements Adapter {
     };
     const add = (element: Element | null | undefined, explicitlyReferenced = false): void => {
       if (!element || !(visible(element) || (explicitlyReferenced && readableReferencedDescription(element)))) return;
-      const value = txt(element).replace(/help_outline/g, '').trim();
+      const value = fieldText(element, label === '广告单元名称');
       if (!value) return;
       if (label === '广告单元 ID') {
         const ids = [...new Set(value.match(/ca-app-pub-\d{16}\/\d{10}/g) || [])];

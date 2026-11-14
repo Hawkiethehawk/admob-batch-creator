@@ -56,6 +56,81 @@ async function identified(): Promise<{ env: FixtureEnv; identity: Identity }> {
   return { env, identity };
 }
 
+test('valid names retain internal whitespace and icon-like text through creation, ID verification and lookup', async (t) => {
+  for (const name of ['Unit  A', 'Unit_help_outline_A', 'Unit\u00a0 A']) await t.test(name, async (t) => {
+    const { env, identity } = await identified();
+    t.after(() => env.dom.window.close());
+    await env.adapter.prepare(identity, 'interstitial', name, '60', async () => {});
+    await env.adapter.submit();
+    assert.equal(env.fixture.state.clicks.length, 1);
+    assert.equal(env.fixture.state.clicks[0].name, name);
+    const created = await env.adapter.verify(identity, 'interstitial', name, '60');
+    assert.equal(created.verified, true);
+    assert.equal(created.name, name);
+    const verified = await env.adapter.verifyById(identity, created.unitId, name, 'interstitial', '60');
+    assert.equal(verified.verified, true);
+    assert.equal(verified.name, name);
+    const found = await env.adapter.lookup(identity, name);
+    assert.equal(found.complete, true);
+    assert.equal(found.matches.length, 1);
+    assert.equal(found.matches[0].unitId, created.unitId);
+    assert.equal(found.matches[0].name, name);
+    assert.equal(found.matches[0].verified, true);
+    assert.equal(env.fixture.state.clicks.length, 1, 'readback never resubmits a unit');
+  });
+});
+
+test('saved names preserve literal help_outline while excluding actual icon nodes', async (t) => {
+  const dom = new JSDOM(savedDetailHtml, { url: 'https://admob.google.com/v2/apps/2222222222/adunits/3333333003/edit', pretendToBeVisual: true });
+  t.after(() => dom.window.close());
+  dom.window.sessionStorage.setItem('abc:live-identity:2222222222', JSON.stringify(identity));
+  const name = 'help_outline  广告';
+  const summary = dom.window.document.querySelector('#saved-name .collapsed-summary')!;
+  summary.textContent = name;
+  summary.insertAdjacentHTML('beforeend', '<help-tooltip-icon><material-icon><i class="material-icons-extended" role="img" aria-hidden="true">help_outline</i></material-icon></help-tooltip-icon>');
+  const adapter = new AdMobAdapter(dom.window.document, 100);
+  const actual = await adapter.verify(identity, 'interstitial', name, '100');
+  assert.equal(actual.name, name);
+  assert.equal(actual.verified, true);
+  assert.ok(summary.querySelector('help-tooltip-icon'), 'reading does not mutate the page');
+  await assert.rejects(adapter.verify(identity, 'interstitial', 'help_outline 广告', '100'), /配置与请求不一致/);
+  await assert.rejects(adapter.verify(identity, 'interstitial', '广告', '100'), /配置与请求不一致/);
+});
+
+test('success receipt names remain exact through saved-detail verification', async (t) => {
+  const { env, identity } = await identified();
+  t.after(() => env.dom.window.close());
+  const name = 'Receipt  help_outline\u00a0A';
+  Object.assign(env.fixture.units[2], { unitId: receiptUnitId, name, floor: '200.00' });
+  const success = new JSDOM(successHtml);
+  t.after(() => success.window.close());
+  success.window.document.querySelector('img[src*="admob_format_interstitial"]')!.setAttribute('alt', name);
+  env.window.history.pushState({}, '', '/v2/apps/2222222222/adunits/create');
+  env.doc.querySelector('#app')!.innerHTML = success.window.document.querySelector('main')!.innerHTML;
+  assert.equal(env.adapter.recoverCreatedId(identity, name, 'interstitial'), receiptUnitId);
+  assert.throws(() => env.adapter.recoverCreatedId(identity, 'Receipt help_outline A', 'interstitial'), /名称或格式/);
+  const actual = await env.adapter.verify(identity, 'interstitial', name, '200');
+  assert.equal(actual.verified, true);
+  assert.equal(actual.name, name);
+  assert.equal(env.fixture.state.clicks.length, 0);
+});
+
+test('fallback application titles preserve the exact name used by creation receipts', async (t) => {
+  const env = load();
+  t.after(() => env.dom.window.close());
+  const appName = 'App  help_outline';
+  for (const entry of env.doc.querySelectorAll('material-list-item')) entry.removeAttribute('aria-label');
+  for (const title of env.doc.querySelectorAll('span.primary-label')) title.textContent = appName;
+  const identified = await env.adapter.identify();
+  assert.equal(identified.appName, appName);
+  const success = new JSDOM(successHtml);
+  t.after(() => success.window.close());
+  success.window.document.querySelector('img[alt="测试应用"]')!.setAttribute('alt', appName);
+  env.window.history.pushState({}, '', '/v2/apps/2222222222/adunits/create');
+  env.doc.querySelector('#app')!.innerHTML = success.window.document.querySelector('main')!.innerHTML;
+  assert.equal(env.adapter.recoverCreatedId(identified, '脱敏插页200', 'interstitial'), receiptUnitId);
+});
+
 test('a stop during final identity readback is checked before the native create click',async t=>{
   const env=load();t.after(()=>env.dom.window.close());
   const account=await env.adapter.identify();

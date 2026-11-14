@@ -15,6 +15,19 @@ const actual: Actual = { ...identity, name: '广告一', unitId: 'ca-app-pub-123
 const clone = <T>(value: T): T => value === undefined ? value : structuredClone(value);
 const storage = new Map<string, unknown>();
 const writes: { key: string; value: unknown }[] = [];
+const submitLocks = new Map<string, Promise<unknown>>();
+Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks: {
+  request(name: string, options: unknown, callback?: (lock: unknown) => unknown): Promise<unknown> {
+    const run = typeof options === 'function' ? options as (lock: unknown) => unknown : callback!;
+    if ((options as LockOptions)?.ifAvailable && submitLocks.has(name)) return Promise.resolve(run(null));
+    const prior = submitLocks.get(name) ?? Promise.resolve();
+    const next = prior.then(() => run({ name }));
+    const tail = next.then(() => {}, () => {});
+    submitLocks.set(name, tail);
+    void tail.then(() => { if (submitLocks.get(name) === tail) submitLocks.delete(name); });
+    return next;
+  },
+} } });
 Object.assign(globalThis, {
   GM_getValue: <T>(key: string, fallback?: T): T => storage.has(key) ? clone(storage.get(key) as T) : clone(fallback as T),
   GM_setValue: (key: string, value: unknown): void => { storage.set(key, clone(value)); writes.push({ key, value: clone(value) }); },
@@ -129,7 +142,7 @@ test('one Start checks a new batch automatically and total timing includes prepa
   let checks=0;
   t.mock.method(f.adapter,'identify',async()=>{checks++;if(checks===1)t.mock.timers.tick(5000);return identify();});
   const config={format:'native' as const,mode:'disabled' as const,concurrency:1,execution:'single' as const,text:'NEW',rows:parseInput('NEW',{mode:'disabled'})};
-  await f.controller.start(config);
+  await f.controller.start({...config, confirmedIdentity: clone(identity)});
   const batch=(f.controller as Controller).batch!;
   assert.equal(batch.phase,'running');assert.ok(checks>=2);
   assert.equal(Date.parse(batch.startedAt!),epoch);assert.equal(Date.parse(batch.confirmedAt!),epoch+5000);
@@ -372,34 +385,27 @@ test('known-ID verification works without cached USD and unlocks the canary only
   assert.equal(f.calls.submit, 0, '继续仅恢复调度，不直接点击提交');
 });
 
-test('an uncertain submitted task persists its exact success receipt before saved-detail navigation', async () => {
+test('an unbound controller receipt cannot supply an ID even when its name and configuration match', async () => {
   const f = fixture(); f.batch.phase = 'paused'; f.slot.busy = undefined;
   const intentAt = new Date().toISOString();
   Object.assign(f.batch.tasks[0], { status: 'uncertain', intentAt });
-  f.adapter.recoverCreatedId = (received, name, format) => {
-    assert.deepEqual(received, f.batch.identity); assert.equal(name, actual.name); assert.equal(format, actual.format);
-    return actual.unitId;
-  };
-  f.adapter.lookup = async () => { throw new Error('已有精确说明凭据时不能退回同名查询'); };
-  f.adapter.verifyById = async (_identity, unitId) => {
-    f.calls.verify++;
-    const persisted = GM_getValue<Batch>(key(f.batch)).tasks[0];
-    assert.equal(unitId, actual.unitId); assert.equal(persisted.actual?.unitId, actual.unitId);
-    assert.equal(persisted.actual?.verified, false, '导航前只能保存未核验凭据');
-    assert.equal(persisted.intentAt, intentAt); assert.equal(persisted.assignmentId, 'assignment'); assert.equal(persisted.workerId, 'worker');
-    return clone(actual);
-  };
+  let receipts = 0;
+  f.adapter.recoverCreatedId = () => { receipts++; return actual.unitId; };
+  f.adapter.lookup = async () => { throw new Error('不能通过同名查询补齐本次 ID'); };
+  f.adapter.verifyById = async () => { f.calls.verify++; return clone(actual); };
   await f.controller.verify();
-  assert.equal(f.batch.tasks[0].status, 'success'); assert.equal(f.batch.tasks[0].actual?.unitId, actual.unitId);
-  assert.equal(f.calls.verify, 1); assert.equal(f.calls.prepare, 0); assert.equal(f.calls.submit, 0);
+  assert.equal(f.batch.tasks[0].status, 'uncertain'); assert.equal(f.batch.tasks[0].actual, undefined);
+  assert.equal(f.batch.tasks[0].intentAt, intentAt); assert.equal(f.batch.tasks[0].assignmentId, 'assignment');
+  assert.equal(receipts, 0); assert.equal(f.calls.verify, 0); assert.equal(f.calls.prepare, 0); assert.equal(f.calls.submit, 0);
+  assert.ok(!exportCsv(f.batch, 'success').includes(actual.unitId));
 });
 
-test('a recovered success receipt survives saved-detail verification failure with its intent and ownership', async () => {
+test('an explicitly observed ID survives saved-detail verification failure with its intent and ownership', async () => {
   const f = fixture(); f.batch.phase = 'paused'; f.slot.busy = undefined;
   const intentAt = new Date().toISOString(); Object.assign(f.batch.tasks[0], { status: 'uncertain', intentAt });
   f.adapter.recoverCreatedId = () => actual.unitId;
   f.adapter.verifyById = async () => { throw new Error('模拟保存详情断网'); };
-  await f.controller.verify();
+  await f.controller.recordObservedId(f.batch.tasks[0].id, actual.unitId);
   const persisted = GM_getValue<Batch>(key(f.batch)).tasks[0];
   assert.equal(persisted.status, 'created-unverified'); assert.equal(persisted.actual?.unitId, actual.unitId);
   assert.equal(persisted.actual?.verified, false); assert.equal(persisted.intentAt, intentAt);
@@ -804,7 +810,7 @@ test('tabs preflight verifies five distinct warm pages and dispatch preserves th
   // have already completed the real controller's two-challenge handshake.
   t.mock.method(f.controller, 'probe', async () => { throw new Error('Unexpected cold probe during result collection'); });
   for (const task of batch.tasks) task.logs[0].at = new Date(Date.now() - 1000).toISOString();
-  await f.controller.start(config); await f.controller.tick(); await f.controller.tick();
+  await f.controller.start({...config, confirmedIdentity: clone(identity)}); await f.controller.tick(); await f.controller.tick();
   assert.equal(batch.tasks.filter(task => task.assignmentId).length, 1, 'only the canary dispatches before saved proof');
   const slot = [...f.controller.slots.values()].find(slot => slot.busy)!;
   const job = GM_getValue<Command>(PREFIX + 'command:' + slot.id).job!;
@@ -837,7 +843,7 @@ test('a failing warm page prevents start even after an earlier successful prefli
     assert.equal(f.controller.preflightSignature, '');
     assert.ok(!f.updates.some(update => (update as { ready?: boolean }).ready === true));
     t.mock.method(f.controller,'probe',async()=>{throw new Error('跨页能力仍未通过');});
-    await assert.rejects(() => f.controller.start(config), /跨页能力/);
+    await assert.rejects(() => f.controller.start({...config, confirmedIdentity: clone(identity)}), /跨页能力/);
     for (const page of pages) {
       const command = GM_getValue<Command>(PREFIX + 'command:' + page.id);
       assert.equal(command.job, undefined); assert.equal(command.grant, undefined);
@@ -935,7 +941,7 @@ test('a freshly reverified historical sample permits five new assignments withou
   assert.equal(batch.canaryEvidence?.sourceBatchId,original.id);assert.equal(batch.canaryEvidence?.unitId,actual.unitId);
   assert.ok(batch.tasks.every(task=>task.status==='pending'&&!task.actual&&!task.intentAt));
   for(const task of batch.tasks)task.logs[0].at=new Date(Date.now()-1000).toISOString();
-  await f.controller.start(config);for(let i=0;i<5;i++)await f.controller.tick();
+  await f.controller.start({...config, confirmedIdentity: clone(identity)});for(let i=0;i<5;i++)await f.controller.tick();
   assert.equal(batch.tasks.filter(task=>task.assignmentId).length,5);
   assert.equal(new Set(batch.tasks.map(task=>task.workerId)).size,5);
   assert.equal(f.calls.submit,0);assert.deepEqual(f.batch,original,'the old completed batch is preserved');

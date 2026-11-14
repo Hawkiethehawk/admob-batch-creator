@@ -5,7 +5,10 @@ import { createBatch, parseInput } from '../src/core.ts';
 import type { Adapter, Identity } from '../src/types.ts';
 import type { Job, Report } from '../src/protocol.ts';
 
-test('an ACK failure after submit preserves the exact receipt ID without certifying its floor', async () => {
+test('an ACK failure after submit preserves the exact receipt ID without certifying its floor', async t => {
+  const oldNavigator=Object.getOwnPropertyDescriptor(globalThis,'navigator');
+  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{locks:{request:async(_name:string,_options:unknown,callback:()=>Promise<void>)=>callback()}}});
+  t.after(()=>{if(oldNavigator)Object.defineProperty(globalThis,'navigator',oldNavigator);else Reflect.deleteProperty(globalThis,'navigator');});
   for (const receipt of ['ca-app-pub-1234567890123456/1234567890', 'ca-app-pub-9999999999999999/1234567890', undefined]) {
     const storage=new Map<string,unknown>();
     Object.assign(globalThis,{GM_getValue:(key:string,fallback:unknown)=>storage.get(key)??fallback,GM_setValue:(key:string,value:unknown)=>storage.set(key,value)});
@@ -17,7 +20,7 @@ test('an ACK failure after submit preserves the exact receipt ID without certify
     const reports:Omit<Report,'id'|'at'|'workerId'>[]=[];
     const adapter:Adapter={
       identify:async()=>identity,home:async()=>{},lookup:async()=>({complete:true,matches:[]}),diagnostics:()=>({}),
-      prepare:async()=>{},submit:async()=>{submits++;},verify:async()=>{verifies++;throw Error('Must preserve before navigation');},
+      prepare:async()=>{},submit:async guard=>{guard!();submits++;},verify:async()=>{verifies++;throw Error('Must preserve before navigation');},
       recoverCreatedId:(seen,name,format)=>{assert.deepEqual(seen,identity);assert.equal(name,'Unit');assert.equal(format,'interstitial');return receipt;},
     };
     await performJob(job,adapter,async report=>{

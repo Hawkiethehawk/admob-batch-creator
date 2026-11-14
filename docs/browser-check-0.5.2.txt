@@ -1,0 +1,55 @@
+npm notice run admob-batch-creator@0.5.2 test:browser
+npm notice run node tests/browser.mjs
+START cross-page-locks
+{"name":"cross-page-locks","pass":true,"controllerMutex":true,"workerMutex":true,"unrelatedTabRetained":true,"createRequests":0}
+START delayed-submit-lock
+{"name":"delayed-submit-lock","pass":true,"realWebLocks":true,"queuedCallbackBlocked":true,"firstPreClickDelayMs":2509,"actualClickIntervalMs":2501,"clicks":[{"worker":"A","at":1794686620262},{"worker":"B","at":1794686622763}],"createRequests":0}
+START modes-and-history
+PROGRESS 0/1 workers=0
+PROGRESS 1/1 workers=0
+PROGRESS 0/1 workers=0
+PROGRESS 1/1 workers=0
+PROGRESS 0/1 workers=0
+PROGRESS 1/1 workers=0
+PROGRESS 0/1 workers=0
+PROGRESS 1/1 workers=0
+PROGRESS 0/1 workers=0
+PROGRESS 1/1 workers=0
+PROGRESS 0/1 workers=0
+PROGRESS 1/1 workers=0
+PROGRESS 0/1 workers=0
+PROGRESS 1/1 workers=0
+PROGRESS 0/1 workers=0
+PROGRESS 1/1 workers=0
+PROGRESS 0/1 workers=0
+PROGRESS 1/1 workers=0
+{"name":"modes-and-history","pass":true,"combinations":9,"succeeded":9,"createRequests":9,"historyCopyExportIsolated":true,"completeWorkflowTimestamps":true}
+START concurrency-1
+PROGRESS 0/10 workers=0
+PROGRESS 1/10 workers=1
+PROGRESS 2/10 workers=1
+PROGRESS 3/10 workers=1
+PROGRESS 4/10 workers=1
+PROGRESS 5/10 workers=1
+PROGRESS 6/10 workers=1
+PROGRESS 7/10 workers=1
+PROGRESS 8/10 workers=1
+PROGRESS 9/10 workers=1
+PROGRESS 10/10 workers=1
+{"name":"concurrency-1","pass":true,"concurrency":1,"rows":10,"inputMs":37,"automaticPreparationMs":81,"elapsedMs":93033,"elapsedIncludesAutomaticPreparation":true,"rowsPerMinute":6.449324433265615,"workerTabsOpened":1,"peakPages":2,"peakWorkers":1,"peakActiveAssignments":1,"peakHeapBytes":6833016,"peakDomNodes":25297,"peakInflightSaves":1,"tasksPerWorker":[10],"grantIntervalsMs":{"min":9264,"median":9274,"max":9284},"submitIntervalsMs":{"min":9263,"median":9274,"max":9283},"remoteNotifications":195,"gmWrites":280,"gmWriteBytes":1465880,"storage":{"entries":19,"bytes":50324,"gmEntries":17},"assertions":["exact-name-floor-format-app-publisher-id","unique-id-and-no-resubmit","verified-canary-before-expansion","pool-reuse-and-cap","global-throttle","real-Web-Locks","native-remote-storage-notifications"]}
+START concurrency-5
+PROGRESS 0/10 workers=0
+PROGRESS 1/10 workers=5
+PROGRESS 2/10 workers=5
+PROGRESS 3/10 workers=5
+PROGRESS 4/10 workers=5
+PROGRESS 5/10 workers=5
+PROGRESS 6/10 workers=5
+PROGRESS 7/10 workers=5
+PROGRESS 8/10 workers=5
+PROGRESS 9/10 workers=5
+PROGRESS 10/10 workers=5
+{"name":"concurrency-5","pass":true,"concurrency":5,"rows":10,"inputMs":40,"automaticPreparationMs":322,"elapsedMs":39029,"elapsedIncludesAutomaticPreparation":true,"rowsPerMinute":15.373184042634964,"workerTabsOpened":5,"peakPages":6,"peakWorkers":5,"peakActiveAssignments":5,"peakHeapBytes":14221952,"peakDomNodes":23786,"peakInflightSaves":4,"tasksPerWorker":[3,2,2,2,1],"grantIntervalsMs":{"min":2503,"median":2508,"max":9275},"submitIntervalsMs":{"min":2502,"median":2507,"max":9275},"remoteNotifications":215,"gmWrites":296,"gmWriteBytes":1412906,"storage":{"entries":27,"bytes":63972,"gmEntries":25},"assertions":["exact-name-floor-format-app-publisher-id","unique-id-and-no-resubmit","verified-canary-before-expansion","pool-reuse-and-cap","global-throttle","real-Web-Locks","native-remote-storage-notifications"]}
+START controller-refresh
+{"name":"controller-refresh","pass":true,"createRequests":1,"restoredSameAssignment":true,"lateIdCollected":true,"savedConfigurationVerified":true}
+RESULTS .\tests\browser-results-0.5.2.json

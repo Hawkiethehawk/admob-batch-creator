@@ -42,6 +42,30 @@ export async function holdLock(name:string):Promise<()=>void> {
     }).catch(reject);
   });
 }
+export async function serializeSubmission(publisherId:string, submit:(beforeClick:()=>void)=>Promise<void>):Promise<void> {
+  if (!navigator.locks) throw new Error('当前环境不支持 Web Locks，无法保证账号提交间隔；已禁用创建');
+  // Queue before requesting a short-lived grant, and retain the lock across
+  // every asynchronous check until the native click has completed.
+  await navigator.locks.request('admob-batch-submit:'+publisherId,{mode:'exclusive'},async()=>{
+    const clockKey='lastClick:'+publisherId;
+    const previous=get<{at:number;pending:boolean}|undefined>(clockKey,undefined);
+    // A page may have ended after the click guard but before the final write.
+    // Acquiring its released lock proves any possible click is already behind
+    // us; start a full interval now rather than trusting its earlier timestamp.
+    const last=previous?.pending?Date.now():previous?.at;
+    const delay=last===undefined?0:Math.max(0,2500-(Date.now()-last));
+    if(delay)await new Promise(resolve=>setTimeout(resolve,delay));
+    let armed=false;
+    try{
+      await submit(()=>{set(clockKey,{at:Date.now(),pending:true});armed=true;});
+    }finally{
+      // The pending marker was durable before clicking. Failure to refine its
+      // timestamp must not interrupt collection of an already submitted ID;
+      // the next lock holder will conservatively wait a complete interval.
+      if(armed){try{set(clockKey,{at:Date.now(),pending:false});}catch{/* Keep collecting this submission's result. */}}
+    }
+  });
+}
 export async function lockUnavailable(name:string):Promise<boolean> {
   if (!navigator.locks) return false;
   return navigator.locks.request(name,{ifAvailable:true},lock=>!lock);

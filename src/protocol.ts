@@ -14,3 +14,13 @@ export function safeFailure(task:Task,hasId:boolean):Task['status'] {return hasI
 export function canDispatch(batch:Batch,busy:number):boolean {
   return batch.phase==='running' && busy<(batch.canaryPassed?batch.concurrency:1);
 }
+export function canRecoverUnsubmitted(job:Job,batch:Batch,command:Command,journal:Journal|undefined):boolean {
+  const task=batch.tasks.find(task=>task.id===job.task.id);
+  return job.kind==='create' && batch.id===job.batch.id
+    && batch.identity.publisherId===job.batch.identity.publisherId && batch.identity.appId===job.batch.identity.appId
+    && command.job?.assignmentId===job.assignmentId && command.job.workerId===job.workerId
+    && !!task && task.assignmentId===job.assignmentId && task.workerId===job.workerId
+    && ['pending','filling','uncertain'].includes(task.status) && !task.intentAt && !task.actual && !command.grant
+    && journal?.state==='filling' && journal.assignmentId===job.assignmentId
+    && journal.taskId===task.id && journal.batchId===batch.id;
+}

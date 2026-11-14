@@ -12,6 +12,7 @@ export interface PanelConfig {
   execution: 'tabs' | 'single';
   text: string;
   rows: InputRow[];
+  confirmedIdentity?: Pick<Identity, 'publisherId' | 'appId'>;
 }
 export interface PanelActions {
   identify(): Promise<void>;
@@ -96,7 +97,9 @@ export function mountPanel(actions: PanelActions): PanelHandle {
   let localBusy = false;
   let inputRows: InputRow[] = [];
   const sourceIssues = new WeakMap<InputRow, string[]>();
+  const nameOnlyHeaders = new WeakSet<InputRow>();
   const prefixBases = new WeakMap<InputRow, string>();
+  let confirmedIdentity: PanelConfig['confirmedIdentity'];
   let renderedBatch = '';
   let restoredBatchId = '';
   let lastBatchPhase = '';
@@ -151,7 +154,12 @@ export function mountPanel(actions: PanelActions): PanelHandle {
   });
 
   mode.addEventListener('change', () => {
-    if (mode.value !== 'manual') for (const row of inputRows) sourceIssues.set(row, (sourceIssues.get(row) ?? []).filter(error => !/应为两列，实际为 1 列/.test(error)));
+    if (mode.value !== 'manual') {
+      // Remove only imported headers, keeping inline edits and applied prefixes.
+      inputRows = inputRows.filter(row => !nameOnlyHeaders.has(row));
+      for (const row of inputRows) sourceIssues.set(row, (sourceIssues.get(row) ?? []).filter(error => !/应为两列，实际为 1 列/.test(error)));
+      syncPaste();
+    }
     invalidate(); renderRows();
   });
   const inputSection = section('创建清单');
@@ -189,7 +197,11 @@ export function mountPanel(actions: PanelActions): PanelHandle {
   const checklist = element('ul', undefined, 'checks'); runSection.append(checklist);
   const confirmLabel = element('label', undefined, 'confirm'); const confirm = element('input'); confirm.type = 'checkbox';
   confirmLabel.append(confirm, element('span', '我已核对当前发布商、应用、广告格式、底价模式和创建清单；点击“开始创建”确认整个批次。')); runSection.append(confirmLabel);
-  confirm.addEventListener('change', updateControls);
+  confirm.addEventListener('change', () => {
+    confirmedIdentity = confirm.checked ? displayedIdentity() : undefined;
+    if (!confirmedIdentity) confirm.checked = false;
+    updateControls();
+  });
   const runActions = element('div', undefined, 'actions');
   runActions.append(button('start', '开始创建', () => actions.start(getConfig()), 'primary'), button('pause', '暂停', actions.pause), button('resume', '继续', actions.resume), button('stop', '停止', actions.stop, 'danger'));
   const recoveryActions = element('div', undefined, 'actions spacer');
@@ -201,7 +213,7 @@ export function mountPanel(actions: PanelActions): PanelHandle {
   const resultSection = section('结果');
   const historyRow = element('div', undefined, 'actions');
   const historySelect = element('select'); historySelect.setAttribute('aria-label', '任务批次'); historySelect.append(option('', '当前任务'));
-  historySelect.addEventListener('change', () => { confirm.checked=false; if (actions.viewHistory) void invoke(() => actions.viewHistory!(historySelect.value)); });
+  historySelect.addEventListener('change', () => { clearConfirmation(); if (actions.viewHistory) void invoke(() => actions.viewHistory!(historySelect.value)); });
   historyRow.append(element('span', '历史结果'), historySelect);
   if (actions.history) historyRow.append(button('history', '刷新历史', actions.history));
   resultSection.append(historyRow);
@@ -221,6 +233,9 @@ export function mountPanel(actions: PanelActions): PanelHandle {
   const rowNodes: { name: HTMLInputElement; floor: HTMLInputElement; error: HTMLElement; errorRow: HTMLTableRowElement; remove: HTMLButtonElement }[] = [];
   function parsedRows(text: string): InputRow[] {
     const rows = parseInput(text, { mode: mode.value as FloorMode });
+    // Manual parsing retains a one-column header as an invalid row. Remember its
+    // provenance so a later mode change can remove it without reparsing edits.
+    if (mode.value === 'manual' && rows.length && parseInput(text, { mode: 'auto' }).length === rows.length - 1) nameOnlyHeaders.add(rows[0]);
     for (const row of rows) sourceIssues.set(row, row.errors.filter(error => /实际为|引号/.test(error)));
     return rows;
   }
@@ -271,7 +286,7 @@ export function mountPanel(actions: PanelActions): PanelHandle {
       const errorRow = element('tr', undefined, 'error-row'); const error = element('td'); error.colSpan = 4; errorRow.append(error);
       inputTbody.append(tr, errorRow); rowNodes.push({ name: nameInput, floor: floorInput, error, errorRow, remove });
       for (const [input, field] of [[nameInput, 'name'], [floorInput, 'floor']] as const) {
-        input.addEventListener('input', () => { row[field] = input.value; if(field === 'name')prefixBases.delete(row); syncPaste(); invalidate(); validateRows(); });
+        input.addEventListener('input', () => { row[field] = input.value; nameOnlyHeaders.delete(row); if(field === 'name')prefixBases.delete(row); syncPaste(); invalidate(); validateRows(); });
         input.addEventListener('paste', event => {
           const text = event.clipboardData?.getData('text/plain'); if (!text || !/[\t\r\n]/.test(text)) return;
           event.preventDefault(); const pasted = parsedRows(text);
@@ -286,9 +301,16 @@ export function mountPanel(actions: PanelActions): PanelHandle {
   }
   function getConfig(): PanelConfig {
     validateRows();
-    return { format: format.value as AdFormat, mode: mode.value as FloorMode, concurrency: execution.value === 'single' ? 1 : Number(concurrency.value), execution: execution.value as 'tabs' | 'single', text: serializeRows(), rows: structuredClone(inputRows) };
+    return { format: format.value as AdFormat, mode: mode.value as FloorMode, concurrency: execution.value === 'single' ? 1 : Number(concurrency.value), execution: execution.value as 'tabs' | 'single', text: serializeRows(), rows: structuredClone(inputRows), confirmedIdentity: confirmedIdentity ? { ...confirmedIdentity } : undefined };
   }
-  function invalidate(): void { state.ready = false; state.checks = []; confirm.checked = false; renderChecks(); updateControls(); }
+  function displayedIdentity(): PanelConfig['confirmedIdentity'] {
+    const identity = state.identity;
+    if (state.identityError || !identity || !/^pub-\d{16}$/.test(identity.publisherId)
+      || !/^ca-app-pub-\d{16}~\d{10}$/.test(identity.appId) || !identity.appId.startsWith(`ca-app-${identity.publisherId}~`)) return undefined;
+    return { publisherId: identity.publisherId, appId: identity.appId };
+  }
+  function clearConfirmation(): void { confirm.checked = false; confirmedIdentity = undefined; }
+  function invalidate(): void { state.ready = false; state.checks = []; clearConfirmation(); renderChecks(); updateControls(); }
   function isFrozen(): boolean { return !!state.batch && ['running', 'paused', 'stopping'].includes(state.batch.phase); }
   function isBusy(): boolean { return localBusy || !!state.busy; }
   function updateControls(): void {
@@ -296,11 +318,13 @@ export function mountPanel(actions: PanelActions): PanelHandle {
     editableControls.forEach(control => { control.disabled = busy || frozen; });
     concurrency.disabled = busy || frozen || execution.value === 'single';
     rowNodes.forEach(nodes => { nodes.name.disabled = busy || frozen; nodes.floor.disabled = busy || frozen; nodes.remove.disabled = busy || frozen; });
-    confirm.disabled = busy || frozen;
+    const identity = displayedIdentity();
+    confirm.disabled = busy || frozen || !identity;
     Object.values(buttons).forEach(b => { b.disabled = busy; });
     historySelect.disabled = busy;
     const valid = inputRows.length > 0 && inputRows.every(row => !row.errors.length);
-    buttons.start.disabled = busy || frozen || !valid || !confirm.checked;
+    buttons.start.disabled = busy || frozen || !valid || !confirm.checked || !identity || !confirmedIdentity
+      || confirmedIdentity.publisherId !== identity.publisherId || confirmedIdentity.appId !== identity.appId;
     buttons.pause.disabled = busy || batch?.phase !== 'running';
     const unresolved = batch?.tasks.filter(t => needsVerification(t) && !['success', 'exists'].includes(t.status)).length ?? 0;
     const resumeBlocked = batch?.phase === 'paused' && unresolved > 0;
@@ -393,9 +417,11 @@ export function mountPanel(actions: PanelActions): PanelHandle {
   return {
     getConfig,
     update(patch) {
+      const previousIdentity = confirmedIdentity ?? state.identity;
+      if (patch.identityError || ('identity' in patch && (patch.identity?.publisherId !== previousIdentity?.publisherId || patch.identity?.appId !== previousIdentity?.appId))) clearConfirmation();
       if(patch.batch){
         const phase=`${patch.batch.id}:${patch.batch.phase}`;
-        if(phase!==lastBatchPhase && patch.batch.phase!=='draft')confirm.checked=false;
+        if(phase!==lastBatchPhase && patch.batch.phase!=='draft')clearConfirmation();
         lastBatchPhase=phase;
       }
       Object.assign(state, patch);

@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { build } from 'esbuild';
 
 // Real isolated Chromium pages and Web Locks; simulated GM APIs and a
 // loopback-only backend using the redacted live DOM. Never uses HubVPS data.
@@ -50,7 +51,7 @@ const server = createServer(async (request, response) => {
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
-const outputPath = resolve(process.env.ADMOB_BROWSER_RESULTS || 'tests/browser-results-0.5.1.json');
+const outputPath = resolve(process.env.ADMOB_BROWSER_RESULTS || 'tests/browser-results-0.5.2.json');
 const results = {
   at: new Date().toISOString(),
   scope: 'Isolated headless Chromium; real pages, Web Locks, native storage notifications; simulated GM and delayed loopback backend. Not HubVPS/Tampermonkey or real AdMob acceptance.',
@@ -229,6 +230,74 @@ async function lockChecks(browser) {
   } finally { await run.close(); }
 }
 
+async function delayedSubmitLock(browser) {
+  const helper = await build({
+    stdin: { contents: "import { serializeSubmission } from './src/gm.ts'; window.__serializeSubmission = serializeSubmission;", resolveDir: process.cwd(), sourcefile: 'submission-lock-browser-test.js' },
+    bundle: true, write: false, format: 'iife', target: ['chrome109'],
+  });
+  const run = await setup(browser, { delay: 0 });
+  try {
+    const first = await run.context.newPage(); const second = await run.context.newPage();
+    const publisherId = 'pub-1111111111111111';
+    const lockName = 'admob-batch-submit:' + publisherId;
+    for (const [page, worker] of [[first, 'A'], [second, 'B']]) {
+      await page.goto(origin + '/sentinel');
+      await page.addScriptTag({ content: helper.outputFiles[0].text });
+      await page.evaluate(worker => {
+        const button = document.createElement('button'); button.id = 'submit-probe';
+        button.textContent = 'Loopback test click'; document.body.append(button);
+        button.addEventListener('click', () => {
+          const clicks = JSON.parse(localStorage.getItem('submission-lock-clicks') || '[]');
+          clicks.push({ worker, at: Date.now() }); localStorage.setItem('submission-lock-clicks', JSON.stringify(clicks));
+        });
+      }, worker);
+    }
+    await first.evaluate(publisherId => {
+      const gate = new Promise(resolve => { window.__releaseSubmitGate = resolve; });
+      window.__submission = window.__serializeSubmission(publisherId, async beforeClick => {
+        window.__enteredAt = Date.now();
+        await gate;
+        beforeClick(); document.querySelector('#submit-probe').click();
+      }).then(() => { window.__finished = true; }, error => { window.__submissionError = error.message; });
+    }, publisherId);
+    await first.waitForFunction(() => window.__enteredAt !== undefined);
+    await second.evaluate(publisherId => {
+      window.__submission = window.__serializeSubmission(publisherId, async beforeClick => {
+        window.__enteredAt = Date.now();
+        beforeClick(); document.querySelector('#submit-probe').click();
+      }).then(() => { window.__finished = true; }, error => { window.__submissionError = error.message; });
+    }, publisherId);
+    await second.waitForFunction(async lockName => {
+      const locks = await navigator.locks.query();
+      return locks.held.some(lock => lock.name === lockName) && locks.pending.some(lock => lock.name === lockName);
+    }, lockName);
+    // Hold A after it has acquired the actual browser lock and B has queued.
+    // A delayed pre-click path must not let B consume its own callback early.
+    await pause(2500);
+    const beforeRelease = await second.evaluate(async lockName => ({
+      entered: window.__enteredAt !== undefined,
+      pending: (await navigator.locks.query()).pending.some(lock => lock.name === lockName),
+    }), lockName);
+    assert.equal(beforeRelease.entered, false, 'B cannot enter the submit callback while A owns the lock');
+    assert.equal(beforeRelease.pending, true, 'B remains queued after A has been delayed for 2500 ms');
+    await first.evaluate(() => { window.__releaseSubmitGate(); });
+    await Promise.all([first, second].map(page => page.waitForFunction(() => window.__finished || window.__submissionError, undefined, { timeout: 10000 })));
+    const outcome = await first.evaluate(() => ({
+      clicks: JSON.parse(localStorage.getItem('submission-lock-clicks') || '[]'),
+      enteredAt: window.__enteredAt, error: window.__submissionError,
+    }));
+    assert.equal(outcome.error, undefined);
+    assert.equal(await second.evaluate(() => window.__submissionError), undefined);
+    assert.deepEqual(outcome.clicks.map(click => click.worker), ['A', 'B']);
+    const firstPreClickDelayMs = outcome.clicks[0].at - outcome.enteredAt;
+    const actualClickIntervalMs = outcome.clicks[1].at - outcome.clicks[0].at;
+    assert.ok(firstPreClickDelayMs >= 2500, 'A was delayed for at least 2500 ms after entering the locked callback');
+    assert.ok(actualClickIntervalMs >= 2500, 'real cross-page DOM clicks remain at least 2500 ms apart');
+    assert.equal(run.backend.requests.length, 0); assert.deepEqual(run.errors, []);
+    return { realWebLocks: true, queuedCallbackBlocked: true, firstPreClickDelayMs, actualClickIntervalMs, clicks: outcome.clicks, createRequests: 0 };
+  } finally { await run.close(); }
+}
+
 async function modesAndHistory(browser) {
   const run = await setup(browser, { delay: 0 });
   const batches = [];
@@ -299,7 +368,7 @@ try {
   if (executablePath) assert.ok(existsSync(executablePath), 'ADMOB_BROWSER_PATH does not exist');
   browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   results.browser = { name: 'Chromium', version: browser.version(), profile: 'temporary isolated Playwright context' };
-  const cases = [['cross-page-locks', () => lockChecks(browser)], ['modes-and-history', () => modesAndHistory(browser)], ['concurrency-1', () => benchmark(browser, 1)], ['concurrency-5', () => benchmark(browser, 5)], ['controller-refresh',()=>controllerRefresh(browser)]];
+  const cases = [['cross-page-locks', () => lockChecks(browser)], ['delayed-submit-lock', () => delayedSubmitLock(browser)], ['modes-and-history', () => modesAndHistory(browser)], ['concurrency-1', () => benchmark(browser, 1)], ['concurrency-5', () => benchmark(browser, 5)], ['controller-refresh',()=>controllerRefresh(browser)]];
   for (const [name, execute] of cases) {
     if (existsSync(resolve('tests/.browser-pause'))) { results.paused = true; break; }
     if (process.env.CASE_FILTER && !name.includes(process.env.CASE_FILTER)) continue;

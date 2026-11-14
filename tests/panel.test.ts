@@ -12,6 +12,7 @@ function fixture(overrides: Partial<PanelActions> = {}) {
   Object.assign(globalThis, { document: dom.window.document });
   const no = async () => {};
   const handle = mountPanel({ identify: no, preflight: no, start: no, pause: no, resume: no, stop: no, retry: no, verify: no, degrade: no, export: no, copy: no, diagnostics: no, probe: no, ...overrides });
+  handle.update({ identity });
   const root = dom.window.document.querySelector('#abc-panel-host')!.shadowRoot!;
   const button = (text: string) => {
     const found = [...root.querySelectorAll('button')].find(node => node.textContent === text);

@@ -86,7 +86,9 @@ export class Controller {
     this.panel.update({batch:this.batch});
   }}
   async identify():Promise<void>{
-    const identity=await this.adapter.identify();
+    let identity:Identity;
+    try{identity=await this.adapter.identify();}
+    catch(error){this.preflightSignature='';this.panel.update({identityError:(error as Error).message,ready:false});throw error;}
     if(this.batch && !sameIdentity(identity,this.batch.identity) && this.batch.phase!=='done')await this.pause('主控账号或应用已切换；批次保留在原账号和应用');
     this.identity=identity;this.panel.update({identity,identityError:''});
   }
@@ -141,6 +143,12 @@ export class Controller {
     this.notice(batch.phase==='draft'?'已恢复未确认草稿。检查清单后点击开始创建，将自动检查执行条件。':batch.phase==='done'?'已恢复已结束批次，可查看历史结果或填写新清单。':'已恢复历史批次并暂停。提交过或结果不确定的任务只允许先核验；点击继续才会派发尚未提交的任务。');
   }
   signature(config:PanelConfig):string{return JSON.stringify([config.format,config.mode ?? 'manual',config.concurrency,config.execution,config.rows,this.identity?.publisherId,this.identity?.appId]);}
+  private checkConfirmedIdentity(config:PanelConfig):void{
+    if(!config.confirmedIdentity || !this.identity || !sameIdentity(config.confirmedIdentity,this.identity)){
+      this.preflightSignature='';this.panel.update({ready:false});
+      throw new Error('当前账号或应用与整批确认不一致，请核对当前页面并重新勾选确认后开始');
+    }
+  }
   private async warmPool(target:number):Promise<void>{
     const ready=[...this.slots.values()].filter(slot=>!slot.busy && slot.probePassed && !slot.tab?.closed && slot.batchId===this.batch?.id && slot.identity && this.identity && sameIdentity(slot.identity,this.identity)).length;
     for(let index=ready;index<target;index++){
@@ -172,7 +180,9 @@ export class Controller {
     this.preflightSignature='';this.panel.update({ready:false});
     for(const [id,slot] of this.slots)if(!slot.busy){this.removeSlot(id);slot.tab?.close();}
     this.notice('预检：确认当前账号、主控锁和输入…');
-    await this.identify();await this.acquire();
+    await this.identify();
+    if(config.confirmedIdentity)this.checkConfirmedIdentity(config);
+    await this.acquire();
     const active=get<{appId:string;id:string}|undefined>('active:'+this.identity!.publisherId,undefined);
     if(active && active.id!==this.batch?.id){
       const old=get<Batch|undefined>('batch:'+this.identity!.publisherId+':'+active.appId+':'+active.id,undefined);
@@ -254,8 +264,11 @@ export class Controller {
   async start(config:PanelConfig):Promise<void>{
     const requestedAt=new Date().toISOString();
     if(this.batch && !['draft','done'].includes(this.batch.phase))throw new Error('当前批次尚未结束，请使用暂停、继续或停止');
+    // The confirmation belongs to the identity the user saw, never whichever
+    // application happens to be selected when asynchronous preflight finishes.
+    this.checkConfirmedIdentity(config);
     if(!this.batch || this.batch.phase!=='draft' || this.preflightSignature!==this.signature(config))await this.preflight(config);
-    this.requireBatch();await this.identify();await this.acquire();
+    this.requireBatch();await this.identify();this.checkConfirmedIdentity(config);await this.acquire();
     if(this.batch!.phase!=='draft' || this.preflightSignature!==this.signature(config))throw new Error('输入或账号已变化，请检查清单后重新点击开始创建');
     this.batch!.startedAt=requestedAt;delete this.batch!.completedAt;
     this.batch!.confirmedAt=new Date().toISOString();this.batch!.phase='running';set('active:'+this.batch!.identity.publisherId,{appId:this.batch!.identity.appId,id:this.batch!.id});this.save();
@@ -318,17 +331,10 @@ export class Controller {
     try{for(const task of tasks){
       if(task.status!=='verifying')transition(task,'verifying','只读核验平台真实结果');
       try{
-      let knownId=task.actual?.unitId;
-      if(!knownId && task.intentAt && this.adapter.recoverCreatedId){
-        // Recover only this task's real success receipt before any lookup can
-        // navigate away. Persist the ID while it is still unverified.
-        const recovered=this.adapter.recoverCreatedId(this.batch!.identity,task.name,this.batch!.format);
-        if(recovered){
-          if(!/^ca-app-pub-\d{16}\/\d{10}$/.test(recovered) || !recovered.startsWith(`ca-app-${this.batch!.identity.publisherId}/`))throw new Error('成功说明中的广告位 ID 与批次发布商不匹配，保留待核验');
-          task.actual={...task.actual,unitId:recovered,publisherId:this.batch!.identity.publisherId,appId:this.batch!.identity.appId,name:task.name,format:this.batch!.format,verified:false};
-          this.save();knownId=recovered;
-        }
-      }
+      // A receipt on the controller page can belong to an older same-name
+      // unit. Only an assigned worker report or an explicitly recorded ID
+      // establishes which unit to verify; page contents alone cannot do so.
+      const knownId=task.actual?.unitId;
       if(knownId && this.adapter.verifyById){
         const actual=await this.adapter.verifyById(this.batch!.identity,knownId,task.name,this.batch!.format,task.floor,this.batch!.mode);
         if(actual.unitId!==knownId){

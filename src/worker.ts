@@ -1,7 +1,8 @@
 import type { Adapter, Batch, Task } from './types.ts';
 import { classifyLookup } from './core.ts';
-import { get, set, sameIdentity, uuid, waitFor, lockUnavailable, listen, holdLock } from './gm.ts';
+import { get, set, sameIdentity, uuid, waitFor, lockUnavailable, listen, holdLock, serializeSubmission } from './gm.ts';
 import type { Command, Job, Journal, Report } from './protocol.ts';
+import { canRecoverUnsubmitted } from './protocol.ts';
 
 export async function performJob(job:Job, adapter:Adapter, emit:(r:Omit<Report,'id'|'at'|'workerId'>)=>Promise<void>, permission:(beforeClick?:boolean)=>void):Promise<void> {
   const {batch,task,assignmentId,workerId}=job;
@@ -57,13 +58,17 @@ export async function performJob(job:Job, adapter:Adapter, emit:(r:Omit<Report,'
     await adapter.prepare(batch.identity,batch.format,task.name,task.floor,checkpoint,batch.mode ?? task.mode ?? 'manual');
     await report({type:'stage',stage:'filling',reason:'表单已读回，等待提交许可'});
     await checkpoint();
-    // The controller durably stores submitting + intent before acknowledging this message.
-    intent=true;
-    await report({type:'intent'});
-    await checkpoint();
-    set(journalKey,{assignmentId,taskId:task.id,batchId:batch.id,state:'intent'} satisfies Journal);
-    intent=true;
-    await adapter.submit(()=>permission(true));
+    await serializeSubmission(batch.identity.publisherId,async recordClick=>{
+      // Waiting workers have no grant or submit intent. Recheck cancellation
+      // and ownership once the preceding worker has released the submit lock.
+      await checkpoint();
+      // The controller durably stores submitting + intent before acknowledging this message.
+      intent=true;
+      await report({type:'intent'});
+      await checkpoint();
+      set(journalKey,{assignmentId,taskId:task.id,batchId:batch.id,state:'intent'} satisfies Journal);
+      await adapter.submit(()=>{permission(true);recordClick();});
+    });
     await report({type:'stage',stage:'verifying'});
     if(adapter.waitForUnitId){
       const createdId=await adapter.waitForUnitId().catch(()=>undefined);
@@ -138,7 +143,19 @@ export async function runWorker(workerId:string, adapter:Adapter):Promise<void> 
     const job=cmd.job;
     // Controller ownership must still match the persisted batch; no worker reads a shared queue.
     const batch=get<Batch|undefined>('batch:'+job.batch.identity.publisherId+':'+job.batch.identity.appId+':'+job.batch.id,undefined);
-    if(!batch || batch.controllerId!==job.batch.controllerId || !['running','paused','stopping'].includes(batch.phase))return;
+    if(!batch || !['running','paused','stopping'].includes(batch.phase))return;
+    if(batch.controllerId!==job.batch.controllerId){
+      // The worker lock proves the old page instance has ended. A replacement
+      // controller still needs a terminal response for a matching assignment
+      // that durably stopped before any grant/intent; never execute the old job.
+      const journal=get<Journal|undefined>('journal:'+job.assignmentId,undefined);
+      if(!canRecoverUnsubmitted(job,batch,cmd,journal))return;
+      seen=job.assignmentId;running=true;activeJob=job;
+      try{await emit({type:'error',assignmentId:job.assignmentId,taskId:job.task.id,status:'failed',reason:'旧主控已恢复，执行页的匹配填表记录无提交意图、结果或许可；确认未提交，等待手动重试'});}
+      catch(e){status.textContent='执行页通信中断：'+(e as Error).message+'。保持此页，返回主控恢复核验。';}
+      finally{running=false;}
+      return;
+    }
     seen=job.assignmentId;running=true;activeJob=job;
     try{
       await performJob(job,adapter,emit,(beforeClick)=>{
