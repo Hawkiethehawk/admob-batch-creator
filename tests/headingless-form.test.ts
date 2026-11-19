@@ -112,12 +112,13 @@ test('saved routes, incomplete forms and competing creators cannot supply a crea
 
 test('returning from a standalone page waits for the list grid after its route changes', {timeout:1000}, async t => {
   t.mock.timers.enable({apis:['setInterval','setTimeout']});
-  const dom=new JSDOM('<main></main>',{url:route});
+  const fallbackRoute=route.replace('admob.google.com','fixture.example');
+  const dom=new JSDOM('<main></main>',{url:fallbackRoute});
   try {
     const view=dom.window;
     t.mock.method(view.history,'back',()=>{
-      view.history.replaceState({},'',route.replace('create','list'));
-      view.setTimeout(()=>{view.document.querySelector('main')!.innerHTML='<div role="grid" aria-label="广告单元"></div>';},6000);
+      view.history.replaceState({},'',fallbackRoute.replace('create','list'));
+      view.setTimeout(()=>{view.document.querySelector('main')!.innerHTML='<input aria-label="按广告单元名称搜索"><div role="grid" aria-label="广告单元"></div><material-button role="button">添加广告单元</material-button>';},6000);
     });
     const waiting=new AdMobAdapter(view.document).home();
     t.mock.timers.tick(6200);await waiting;

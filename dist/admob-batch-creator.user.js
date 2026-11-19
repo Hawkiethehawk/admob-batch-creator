@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         AdMob Batch Creator
 // @namespace    local.admob-batch-creator
-// @version      0.5.2
-// @description  中文 AdMob 插屏/开屏/信息流批量创建、三种底价模式、历史批次与核验导出
+// @version      0.5.10
+// @description  中文 AdMob 六种格式批量创建、并发开页、串行、合作平台出价及核验导出
 // @match        https://admob.google.com/*
 // @match        https://apps.admob.com/*
 // @run-at       document-idle
@@ -18,13 +18,24 @@
 // @grant        GM_setClipboard
 // @grant        GM_getTab
 // @grant        GM_saveTab
+// @grant        window.close
 // ==/UserScript==
 
 "use strict";
 (() => {
   // src/types.ts
   var STATUS_ZH = { pending: "待执行", filling: "填表中", submitting: "提交中", verifying: "核验中", success: "成功", failed: "明确失败", uncertain: "结果不确定", "created-unverified": "已创建但配置待核验", exists: "已存在", conflict: "冲突", stopped: "已停止" };
-  var FORMAT_ZH = { interstitial: "插页式", "app-open": "开屏", native: "信息流（原生广告）" };
+  var FORMAT_ZH = { interstitial: "插页式", "app-open": "开屏", native: "信息流（原生高级广告）", banner: "横幅", rewarded: "激励广告", "rewarded-interstitial": "插页式激励广告" };
+  var standardMedia = ["文字、图片和富媒体", "视频"];
+  var MEDIA_DEFAULTS = {
+    banner: standardMedia,
+    interstitial: standardMedia,
+    "app-open": standardMedia,
+    native: ["图片", "视频"],
+    rewarded: ["视频", "广告连播", "互动式"],
+    "rewarded-interstitial": ["视频", "互动式"]
+  };
+  var REWARD_DEFAULT = { amount: "1", item: "Reward" };
   var MODE_ZH = { manual: "人工指定底价", auto: "由 Google 优化", disabled: "已停用" };
 
   // src/history.ts
@@ -171,6 +182,9 @@
   function matchesFloor(actual, floor, mode = "manual") {
     return actual.mode === mode && (mode !== "manual" || actual.currency === "USD" && actual.floor !== void 0 && decimalEqual(actual.floor, floor));
   }
+  function matchesRequestedConfiguration(actual, floor, mode = "manual", partnerBidding = false) {
+    return partnerBidding ? actual.partnerBidding === true && actual.mode === "partner-bidding" : actual.partnerBidding !== true && matchesFloor(actual, floor, mode);
+  }
   function classifyLookup(lookup, identity, format, name, floor, mode = "manual") {
     if (!lookup.complete) return { status: "uncertain", reason: lookup.reason || "已有广告位读取不完整，不能判定不存在" };
     const matches = lookup.matches.filter((match) => match.name === name);
@@ -206,7 +220,7 @@
     if (status === "submitting" && (!task.assignmentId || !task.workerId || !task.intentAt)) throw new Error("提交前必须持久化提交意图与任务归属");
     if (status === "success") {
       const actual = task.actual;
-      if (!actual?.verified || !actual.unitId || !/^ca-app-pub-\d{16}\/\d{10}$/.test(actual.unitId) || !actual.publisherId || !actual.appId || !actual.unitId.startsWith(`ca-app-${actual.publisherId}/`) || !actual.appId.startsWith(`ca-app-${actual.publisherId}~`) || actual.name !== task.name || !actual.format || !matchesFloor(actual, task.floor, task.mode ?? "manual")) {
+      if (!actual?.verified || !actual.unitId || !/^ca-app-pub-\d{16}\/\d{10}$/.test(actual.unitId) || !actual.publisherId || !actual.appId || !actual.unitId.startsWith(`ca-app-${actual.publisherId}/`) || !actual.appId.startsWith(`ca-app-${actual.publisherId}~`) || actual.name !== task.name || !actual.format || !matchesRequestedConfiguration(actual, task.floor, task.mode ?? "manual", task.partnerBidding)) {
         throw new Error("实际保存配置与广告位 ID 尚未完整核验，不能标记成功");
       }
     }
@@ -234,7 +248,8 @@
   function newId() {
     return globalThis.crypto.randomUUID();
   }
-  function createBatch(rows, identity, format, concurrency, execution, sourceUrl, controllerId, mode = "manual") {
+  function createBatch(rows, identity, format, concurrency, execution, sourceUrl, controllerId, mode = "manual", partnerBidding = false) {
+    if (partnerBidding) mode = "disabled";
     if (!["manual", "auto", "disabled"].includes(mode)) throw new Error("不支持的底价模式");
     if (!Array.isArray(rows) || !rows.length) throw new Error("请输入至少一条广告位");
     for (const row of rows) {
@@ -246,8 +261,9 @@
     }
     if (!/^pub-\d{16}$/.test(identity.publisherId) || !/^ca-app-pub-\d{16}~\d{10}$/.test(identity.appId) || !identity.appId.startsWith(`ca-app-${identity.publisherId}~`)) throw new Error("发布商 ID 或应用 ID 无效或不匹配");
     if (![1, 2, 3, 4, 5].includes(concurrency)) throw new Error("并发数必须为 1、2、3、4 或 5");
-    if (!["interstitial", "app-open", "native"].includes(format)) throw new Error("不支持的广告格式");
-    if (!["tabs", "single"].includes(execution)) throw new Error("不支持的执行模式");
+    if (!Object.hasOwn(FORMAT_ZH, format)) throw new Error("不支持的广告格式");
+    if (partnerBidding && format === "rewarded-interstitial") throw new Error("插页式激励广告不支持合作平台出价");
+    if (!["tabs", "single", "paged"].includes(execution)) throw new Error("不支持的执行模式");
     if (typeof controllerId !== "string" || !controllerId.trim()) throw new Error("主控标识不能为空");
     return {
       schema: 1,
@@ -255,15 +271,16 @@
       identity: structuredClone(identity),
       format,
       mode,
+      partnerBidding,
       currency: "USD",
-      concurrency: execution === "single" ? 1 : concurrency,
+      concurrency: execution === "tabs" ? concurrency : 1,
       execution,
       sourceUrl,
       phase: "draft",
       createdAt: (/* @__PURE__ */ new Date()).toISOString(),
       canaryPassed: false,
       controllerId,
-      tasks: rows.map((row) => ({ id: newId(), line: row.line, name: row.name, mode, floor: mode === "manual" ? normalizeDecimal(row.floor) : "", status: "pending", reason: "", attempts: 0, logs: [] }))
+      tasks: rows.map((row) => ({ id: newId(), line: row.line, name: row.name, mode, ...partnerBidding ? { partnerBidding: true } : {}, floor: mode === "manual" ? normalizeDecimal(row.floor) : "", status: "pending", reason: "", attempts: 0, logs: [] }))
     };
   }
   function spreadsheetText(value) {
@@ -279,7 +296,7 @@
     const tasks = batch.tasks.filter((task) => filter === "all" || (filter === "success" ? success.has(task.status) : !success.has(task.status)));
     const records = [["原始行号", "发布商ID", "应用名称", "App ID", "广告位名称", "广告格式", "请求底价模式", "请求底价USD", "实际底价模式", "实际底价", "实际币种", "广告位ID", "状态", "原因", "完成时间", "批次ID", "批次开始时间", "批次结束时间", "批次总耗时"]];
     const timing = summarizeBatch(batch);
-    for (const task of tasks) records.push([task.line, batch.identity.publisherId, batch.identity.appName, batch.identity.appId, task.name, FORMAT_ZH[batch.format], MODE_ZH[batch.mode ?? "manual"], task.floor, task.actual?.mode, task.actual?.floor, task.actual?.currency, task.actual?.unitId, STATUS_ZH[task.status], task.reason, task.finishedAt, batch.id, timing.startedAt, timing.completedAt, batchElapsed(timing)]);
+    for (const task of tasks) records.push([task.line, batch.identity.publisherId, batch.identity.appName, batch.identity.appId, task.name, FORMAT_ZH[batch.format], batch.partnerBidding ? "不适用（合作平台出价）" : MODE_ZH[batch.mode ?? "manual"], batch.partnerBidding ? "" : task.floor, task.actual?.mode === "partner-bidding" ? "不适用（合作平台出价）" : task.actual?.mode, task.actual?.floor, task.actual?.currency, task.actual?.unitId, STATUS_ZH[task.status], task.reason, task.finishedAt, batch.id, timing.startedAt, timing.completedAt, batchElapsed(timing)]);
     return `\uFEFF${records.map((row) => row.map(csvCell).join(",")).join("\r\n")}\r
 `;
   }
@@ -312,20 +329,40 @@
     mode: ["底价模式"],
     amount: ["全局底价"],
     currency: ["底价币种", "币种"],
+    banner: ["横幅广告", "横幅"],
     interstitial: ["插页式广告", "插页式", "插屏"],
+    rewarded: ["激励广告", "激励"],
+    "rewarded-interstitial": ["插页式激励广告", "激励插页式广告", "插页式激励", "激励插页式"],
     "app-open": ["开屏广告", "开屏"],
     native: ["原生高级广告", "原生广告", "原生"],
     next: ["转到下一页", "下一页"],
     first: ["转到首页", "第一页"],
     back: ["返回", "转到广告单元列表"]
   };
-  var FORMAT_PAGE = { interstitial: "插页式广告", "app-open": "开屏广告", native: "原生高级广告" };
+  var FORMAT_LABELS = {
+    banner: ZH.banner,
+    interstitial: ZH.interstitial,
+    rewarded: ZH.rewarded,
+    "rewarded-interstitial": ZH["rewarded-interstitial"],
+    "app-open": ZH["app-open"],
+    native: ZH.native
+  };
+  var FORMAT_PAGE = {
+    banner: "横幅广告",
+    interstitial: "插页式广告",
+    rewarded: "激励广告",
+    "rewarded-interstitial": "插页式激励广告",
+    "app-open": "开屏广告",
+    native: "原生高级广告"
+  };
   var PUBLISHER_RX = /^pub-\d{16}$/;
   var APP_RX = /^ca-app-pub-(\d{16})~(\d{10})$/;
   var UNIT_RX = /^ca-app-pub-(\d{16})\/(\d{10})$/;
   var ANY_APP_RX = /ca-app-pub-\d{16}~\d{10}/;
   var ANY_UNIT_RX = /ca-app-pub-\d{16}\/\d{10}/;
   var SESSION_IDENTITY = "abc:live-identity:";
+  var DEFAULT_MEDIA_TYPES = MEDIA_DEFAULTS.interstitial;
+  var PARTNER_BIDDING_LABEL = "我目前在另一中介平台（而非 AdMob）上将此广告单元用于实时出价。";
   var AdapterError = class extends Error {
     code;
     fatal;
@@ -425,18 +462,21 @@
   function formatFrom(s) {
     if (!s) return void 0;
     const value = s.trim();
-    if (value === "插页式广告" || value === "插页式" || value === "插屏") return "interstitial";
-    if (value === "开屏广告" || value === "开屏") return "app-open";
-    if (["原生高级广告", "原生广告", "原生"].includes(value)) return "native";
-    return void 0;
+    return Object.keys(FORMAT_LABELS).find((format) => FORMAT_LABELS[format].includes(value));
   }
   function formatFromCell(s) {
     if (!s) return void 0;
-    if (/激励/.test(s)) return void 0;
-    if (/插页式广告|^插页式$|插屏/.test(s)) return "interstitial";
-    if (/开屏广告|^开屏$/.test(s)) return "app-open";
-    if (/原生高级广告|原生广告|^原生$/.test(s)) return "native";
-    return void 0;
+    const exact = formatFrom(s);
+    if (exact) return exact;
+    const labels = Object.entries(FORMAT_LABELS).flatMap(([format, aliases]) => aliases.filter((label) => label.length > 2).map((label) => ({ format, label }))).sort((a, b) => b.label.length - a.label.length);
+    let remaining = s;
+    const matches = /* @__PURE__ */ new Set();
+    for (const { format, label } of labels) {
+      if (!remaining.includes(label)) continue;
+      matches.add(format);
+      remaining = remaining.replaceAll(label, " ");
+    }
+    return matches.size === 1 ? [...matches][0] : void 0;
   }
   function routeAppId(doc) {
     const match = doc.location?.pathname.match(/\/v2\/apps\/(\d{10})(?:\/|$)/);
@@ -494,16 +534,10 @@
     }
     return void 0;
   }
-  function listHref(doc) {
-    for (const el of elements(doc, "material-list-item[href],a[href]")) {
-      const href = el.getAttribute("href") || "";
-      if (/\/v2\/apps\/\d{10}\/adunits\/list$/.test(href)) return href;
-    }
-    return void 0;
-  }
   var AdMobAdapter = class {
     doc;
     timeout;
+    openingIdentity;
     prepared;
     submitted = false;
     constructor(doc = document, timeout = 2e4) {
@@ -578,7 +612,7 @@
         if (!appName2) return void 0;
         const appIdTextValue2 = appIdText(this.doc);
         const unit2 = firstUnit(this.doc);
-        const cached2 = this.identityFromSession(app);
+        const cached2 = (this.onCreateRoute() ? this.openingIdentity : void 0) ?? this.identityFromSession(app);
         const cacheUsable = !!cached2 && cached2.appName === appName2 && cached2.appId.endsWith(`~${app}`);
         if (!appIdTextValue2 && !unit2 && !cacheUsable) return void 0;
         return { appName: appName2, appIdTextValue: appIdTextValue2, unit: unit2, cached: cacheUsable ? cached2 : void 0 };
@@ -613,12 +647,30 @@
         evidence: [
           `当前应用路由 ${app}`,
           `当前页面应用名称「${appName}」`,
-          appIdTextValue ? "应用设置页显式 App ID" : "广告位 ID 的发布商前缀与当前应用路由",
+          appIdTextValue ? "应用设置页显式 App ID" : unit ? "广告位 ID 的发布商前缀与当前应用路由" : "已核对的应用路由、页面应用名称与同一执行页的身份记录",
           "底价币种采用用户已确定的批次 USD 配置，不代表页面字段实测币种"
         ]
       };
       this.saveIdentity(identity, app);
       return identity;
+    }
+    async identifyCreatePage(expected) {
+      const app = this.targetListApp(expected);
+      await this.wait(() => {
+        if (!this.onCreateRoute() || routeAppId(this.doc) !== app) throw new AdapterError("IDENTITY", "执行页未进入目标应用的创建页");
+        const name = appNameFromPage(this.doc);
+        if (!name || !this.formatCards().length) return void 0;
+        if (name !== expected.appName) throw new AdapterError("IDENTITY", "创建页应用名称与主控不一致");
+        return true;
+      }, "等待目标应用的广告格式选择页");
+      this.openingIdentity = expected;
+      try {
+        const actual = await this.identify();
+        if (actual.appId !== expected.appId || actual.publisherId !== expected.publisherId) throw new AdapterError("IDENTITY", "创建页身份与主控不一致");
+        return actual;
+      } finally {
+        this.openingIdentity = void 0;
+      }
     }
     async assertIdentity(identity) {
       const current = await this.identify();
@@ -632,44 +684,50 @@
     onListRoute() {
       return /\/adunits\/list\/?$/.test(this.doc.defaultView?.location.pathname || "");
     }
-    async home() {
-      if (this.onListRoute() && this.grid()) {
-        const search = this.searchInput();
-        if (search?.value.trim()) {
-          await this.setInput(search, "", "清空广告单元搜索");
-          await this.wait(() => !this.searchInput()?.value.trim(), "等待清空广告单元搜索", 1e4).catch(() => void 0);
-        }
-        return;
+    onCreateRoute() {
+      return /^\/v2\/apps\/\d{10}\/adunits\/create\/?$/.test(this.doc.location.pathname);
+    }
+    canRouteWithinDocument() {
+      return this.doc.location.protocol === "https:" && ["admob.google.com", "apps.admob.com"].includes(this.doc.location.hostname);
+    }
+    async routeWithinDocument(path, ready, step, timeout = 4e3, replace = false) {
+      if (!this.canRouteWithinDocument() || !/^\/v2\/apps\/\d{10}\/adunits\/(?:list|\d{10}\/edit)$/.test(path)) {
+        throw new AdapterError("STRUCTURE", "不能导航到未经核对的应用或广告单元路径");
       }
-      if (!this.onListRoute()) {
-        try {
-          this.doc.defaultView?.history.back();
-          await this.wait(() => this.onListRoute() && this.grid(), "返回广告单元列表");
-          const search = this.searchInput();
-          if (search?.value.trim()) {
-            await this.setInput(search, "", "清空广告单元搜索");
-            await this.wait(() => !this.searchInput()?.value.trim(), "等待清空广告单元搜索", 1e4).catch(() => void 0);
-          }
-          return;
-        } catch {
-        }
+      const view = this.doc.defaultView;
+      if (view.location.pathname !== path) {
+        if (replace) view.history.replaceState(view.history.state, "", path);
+        else view.history.pushState(view.history.state, "", path);
       }
-      const href = listHref(this.doc);
-      const links = elements(this.doc, "material-list-item[href],a[href]").filter((e) => /\/adunits\/list$/.test(e.getAttribute("href") || ""));
-      if (links.length === 1) {
-        click(links[0], "返回目标应用广告单元");
-        await this.wait(() => this.grid(), "等待广告单元列表");
-        return;
+      view.dispatchEvent(new view.PopStateEvent("popstate", { state: view.history.state }));
+      await this.wait(() => view.location.pathname === path && ready(), step, timeout);
+    }
+    targetListApp(expected) {
+      const current = routeAppId(this.doc);
+      const requested = expected?.appId.match(APP_RX);
+      if (expected && (!requested || !PUBLISHER_RX.test(expected.publisherId) || `pub-${requested[1]}` !== expected.publisherId)) {
+        throw new AdapterError("IDENTITY", "目标应用或发布商 ID 无效，未导航");
       }
-      if (href) {
-        const target = elements(this.doc, `material-list-item[href="${href}"],a[href="${href}"]`);
-        if (target.length === 1) {
-          click(target[0], "返回目标应用广告单元");
-          await this.wait(() => this.grid(), "等待广告单元列表");
-          return;
-        }
+      const app = requested?.[2] || current;
+      if (!app) throw new AdapterError("IDENTITY", "无法确认目标应用，不能从应用总览猜测返回路径");
+      if (current && current !== app) throw new AdapterError("IDENTITY", "当前页面是其他应用，未切换应用或执行提交");
+      return app;
+    }
+    listReady(app) {
+      if (!this.onListRoute() || routeAppId(this.doc) !== app || !this.grid()) return false;
+      if (elements(this.doc, "format-creator, .instructions-container .instructions").length || elements(this.doc, "h1,h2").some((heading) => /^(创建|修改)广告单元/.test(fieldText(heading))) || elements(this.doc, 'div.header[aria-label="广告单元 ID"], [role="heading"][aria-label="广告单元 ID"]').length) return false;
+      const add = elements(this.doc, 'material-button,button,[role="button"]').filter((control) => sameLabel(accessibleName(control), ZH.add) || sameLabel(fieldText(control), ZH.add));
+      if (add.length > 1) one(add, "添加广告单元入口");
+      return !!this.searchInput() && add.length === 1;
+    }
+    async home(expected) {
+      await this.backToList(expected);
+      if (expected) await this.assertIdentity(expected);
+      const search = this.searchInput();
+      if (search?.value.trim()) {
+        await this.setInput(search, "", "清空广告单元搜索");
+        await this.wait(() => !this.searchInput()?.value.trim(), "等待清空广告单元搜索", 1e4).catch(() => void 0);
       }
-      throw new AdapterError("STRUCTURE", "当前页面没有可点击的广告单元列表入口");
     }
     footerText() {
       const grid = this.grid();
@@ -813,33 +871,90 @@
       if (!name || name !== expected.name) throw new AdapterError("VERIFY", "详情页名称缺失或与列表不一致", true, actual);
       if (!actual.format || actual.format !== expected.format) throw new AdapterError("VERIFY", "详情页格式缺失或与列表不一致", true, actual);
       actual.verified = parsed.verified;
-      await this.backToList();
+      await this.backToList(identity);
       return actual;
     }
-    async backToList() {
+    async backToList(expected) {
       const view = this.doc.defaultView;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        if (this.onListRoute() && this.grid()) return;
+      const app = this.targetListApp(expected);
+      const waitForList = async () => {
         try {
-          view.history.back();
-        } catch {
-        }
-        try {
-          await this.wait(() => this.onListRoute() && this.grid(), "返回广告单元列表", 5e3);
-          return;
-        } catch {
-        }
-        if (this.onListRoute()) {
+          await this.wait(() => this.listReady(app), "等待广告单元列表内容就绪");
+        } catch (error) {
+          if (this.listReady(app)) return;
+          if (!this.onListRoute() || routeAppId(this.doc) !== app) throw error;
           try {
-            await this.wait(() => this.grid(), "等待广告单元列表", 5e3);
+            await this.wait(() => this.listReady(app), "等待已返回的广告单元列表内容就绪");
+          } catch (finalError) {
+            if (this.listReady(app)) return;
+            throw finalError;
+          }
+        }
+      };
+      if (this.listReady(app)) return;
+      if (this.canRouteWithinDocument()) {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            await this.routeWithinDocument(`/v2/apps/${app}/adunits/list`, () => this.listReady(app), "打开目标应用广告单元列表", this.timeout, true);
+            return;
+          } catch (error) {
+            if (this.listReady(app)) return;
+            if (!this.onListRoute() || routeAppId(this.doc) !== app || !(error instanceof AdapterError) || error.code !== "TIMEOUT" || attempt === 1) throw error;
+          }
+        }
+      }
+      if (this.onListRoute()) {
+        await waitForList();
+        return;
+      }
+      if (this.creationReceipt()) {
+        const complete = elements(this.doc, 'material-button,button,[role="button"],a[href]').filter((control) => enabled(control) && ["完成", "返回广告单元列表", "转到广告单元列表"].some((label) => sameLabel(accessibleName(control), [label]) || sameLabel(fieldText(control), [label])));
+        if (complete.length > 1) throw new AdapterError("STRUCTURE", "创建完成后的返回入口不唯一，未操作");
+        if (complete.length === 1) {
+          click(complete[0], "完成并返回广告单元列表");
+          try {
+            await waitForList();
             return;
           } catch {
           }
         }
-        const link = elements(this.doc, "material-list-item[href],a[href]").find((e) => /\/adunits\/list$/.test(e.getAttribute("href") || ""));
+      }
+      for (let attempt = 0; attempt < 3; attempt++) {
+        this.targetListApp(expected);
+        if (this.onListRoute()) {
+          await waitForList();
+          return;
+        }
+        const previous = view.location.href;
+        let popped = false;
+        const returned = () => {
+          popped = true;
+        };
+        view.addEventListener("popstate", returned);
+        try {
+          view.history.back();
+          await this.wait(() => popped || this.onListRoute() || view.location.href !== previous, "等待返回广告单元列表路由");
+        } catch {
+        } finally {
+          view.removeEventListener("popstate", returned);
+        }
+        const current = routeAppId(this.doc);
+        if (current !== app) throw new AdapterError("IDENTITY", "返回路径已离开目标应用，停止历史回退");
+        if (this.onListRoute()) {
+          await waitForList();
+          return;
+        }
+        const link = elements(this.doc, "material-list-item[href],a[href]").find((control) => {
+          try {
+            const url = new URL(control.getAttribute("href"), this.doc.location.href);
+            return url.origin === view.location.origin && url.pathname === `/v2/apps/${app}/adunits/list`;
+          } catch {
+            return false;
+          }
+        });
         if (link) {
           click(link, "返回广告单元列表");
-          await this.wait(() => this.onListRoute() && this.grid(), "等待广告单元列表");
+          await waitForList();
           return;
         }
       }
@@ -867,7 +982,7 @@
     }
     async lookup(identity, name) {
       await this.assertIdentity(identity);
-      await this.home();
+      await this.home(identity);
       if (!this.onListRoute() || !this.grid()) return { complete: false, matches: [], reason: "无法返回广告单元列表，未提交任何变更" };
       await this.wait(() => this.pageInfo(), "等待广告单元列表总数", 15e3).catch(() => void 0);
       const search = this.searchInput();
@@ -949,6 +1064,7 @@
         if (creators.length > 1) throw new AdapterError("STRUCTURE", "创建广告单元表单不唯一，已停止");
         return creators[0];
       }
+      if (this.formatCards().length) return void 0;
       const title = elements(this.doc, "h1,h2").find((e) => /创建广告单元/.test(txt(e)));
       if (title) return title.closest('main,[role="main"],form') || this.doc.body;
       return void 0;
@@ -960,6 +1076,102 @@
     }
     formatLabel() {
       return txt(this.doc.querySelector("div.format-label")) || void 0;
+    }
+    partnerCheckbox(form) {
+      const cards = elements(form, "third-party-bidding-card");
+      if (!cards.length) return void 0;
+      const card = one(cards, "合作平台出价组件");
+      const controls = elements(card, '[role="checkbox"], input[type="checkbox"]').filter((control) => sameLabel(accessibleName(control), [PARTNER_BIDDING_LABEL, "合作平台出价"]) || sameLabel(fieldText(control.querySelector(".bidding-headline")), [PARTNER_BIDDING_LABEL]));
+      return one(controls, "合作平台出价复选框");
+    }
+    partnerChecked(control) {
+      if (control.tagName === "INPUT") return control.checked;
+      const checked = control.getAttribute("aria-checked");
+      if (checked !== "true" && checked !== "false") throw new AdapterError("STRUCTURE", "合作平台出价状态无法读回，未执行提交");
+      return checked === "true";
+    }
+    async setPartnerBidding(form, expected, checkpoint) {
+      const control = this.partnerCheckbox(form);
+      if (!control) {
+        if (expected) throw new AdapterError("ROW", "当前广告格式没有可确认的合作平台出价复选框，不能启用此设置", false);
+        return false;
+      }
+      if (this.partnerChecked(control) !== expected) {
+        await checkpoint();
+        click(control, expected ? "启用合作平台出价" : "关闭合作平台出价");
+        await this.wait(() => {
+          const current = this.partnerCheckbox(form);
+          return !!current && this.partnerChecked(current) === expected;
+        }, "回读合作平台出价");
+      }
+      return true;
+    }
+    assertPartnerBidding(form, expected, previouslyPresent) {
+      const control = this.partnerCheckbox(form);
+      if (!control) {
+        if (expected || previouslyPresent) throw new AdapterError("STRUCTURE", "提交前合作平台出价控件缺失，未执行提交");
+        return;
+      }
+      if (this.partnerChecked(control) !== expected) throw new AdapterError("STRUCTURE", "提交前合作平台出价状态发生变化，未执行提交");
+    }
+    assertSavedPartnerBidding(expected, actual) {
+      let value;
+      try {
+        value = this.savedField("合作平台出价");
+      } catch (error) {
+        if (error instanceof AdapterError) error.actual = { ...actual, ...error.actual };
+        throw error;
+      }
+      const enabled2 = value && sameLabel(value, ["已启用", "启用", "是"]);
+      const disabled = value && sameLabel(value, ["已停用", "停用", "未启用", "否"]);
+      if (enabled2 || disabled) actual.partnerBidding = !!enabled2;
+      if (value !== void 0 && !enabled2 && !disabled || actual.partnerBidding !== void 0 && actual.partnerBidding !== expected || expected && actual.partnerBidding === void 0) {
+        throw new AdapterError("VERIFY", "保存后合作平台出价状态缺失、无法识别或与请求不一致，保留 ID 待核验", true, actual);
+      }
+    }
+    assertPlatformDefaults(form) {
+      const format = formatFrom(this.formatLabel());
+      this.assertRewardDefaults(form, format);
+      const expectedMedia = format ? MEDIA_DEFAULTS[format] : DEFAULT_MEDIA_TYPES;
+      const mediaCards = elements(form, "ad-media-type-card");
+      if (mediaCards.length > 1) throw new AdapterError("STRUCTURE", "广告类型组件不唯一，无法核对默认设置");
+      for (const card of mediaCards) {
+        const controls = elements(card, '[role="checkbox"], input[type="checkbox"]');
+        const labelled = (control, label) => sameLabel(accessibleName(control), [label]) || sameLabel(fieldText(control), [label]);
+        if (controls.some((control) => !expectedMedia.some((label) => labelled(control, label)))) {
+          throw new AdapterError("STRUCTURE", "广告类型包含当前格式未识别的选项，无法核对默认设置");
+        }
+        for (const label of expectedMedia) {
+          const choice = one(controls.filter((control) => labelled(control, label)), `默认广告类型“${label}”`);
+          const checked = choice.tagName === "INPUT" ? choice.checked : choice.getAttribute("aria-checked") === "true";
+          if (!checked) throw new AdapterError("STRUCTURE", `广告类型“${label}”未启用，未执行提交`);
+        }
+      }
+      const frequencyCards = elements(form, "frequency-cap-card");
+      if (frequencyCards.length > 1) throw new AdapterError("STRUCTURE", "频次上限组件不唯一，无法核对默认设置");
+      for (const card of frequencyCards) {
+        const control = one(elements(card, '[role="switch"]'), "频次上限开关");
+        if (control.getAttribute("aria-checked") !== "false") throw new AdapterError("STRUCTURE", "频次上限未停用，未执行提交");
+      }
+    }
+    assertRewardDefaults(form, format) {
+      const cards = elements(form, "reward-settings-card");
+      const rewarded = format === "rewarded" || format === "rewarded-interstitial";
+      if (!rewarded) {
+        if (cards.length) throw new AdapterError("STRUCTURE", "当前广告格式出现不适用的奖励设置，未执行提交");
+        return;
+      }
+      if (!cards.length) {
+        const bidding = this.partnerCheckbox(form);
+        if (bidding && this.partnerChecked(bidding)) return;
+      }
+      const card = one(cards, "奖励设置组件");
+      const inputs = elements(card, "input,textarea");
+      const amount = one(inputs.filter((input) => sameLabel(accessibleName(input), ["输入奖品数量"])), "奖励数量输入框");
+      const item = one(inputs.filter((input) => sameLabel(accessibleName(input), ["输入奖品"])), "奖励奖品输入框");
+      if (amount.value !== REWARD_DEFAULT.amount || amount.getAttribute("aria-invalid") === "true" || !amount.validity.valid || item.value !== REWARD_DEFAULT.item || item.getAttribute("aria-invalid") === "true" || !item.validity.valid) {
+        throw new AdapterError("STRUCTURE", `${FORMAT_PAGE[format]}的奖励设置与平台默认“${REWARD_DEFAULT.amount} ${REWARD_DEFAULT.item}”不一致或无效，未执行提交`);
+      }
     }
     counter(scope) {
       const text = txt(scope.querySelector(".counter-container .counter, .counter"));
@@ -996,24 +1208,37 @@
       await this.sleep(250);
       if (!inputMatchesValue(input, value)) throw new AdapterError("ROW", `${step}：页面未接受输入值，未执行提交`, false);
     }
-    async selectFormat(format) {
-      await this.home();
-      const add = elements(this.doc, 'material-button[aria-label="添加广告单元"], [role="button"][aria-label="添加广告单元"]');
-      click(one(add, "添加广告单元"), "添加广告单元");
-      await this.wait(() => elements(this.doc, "section.ad-format-card").length > 0, "等待广告格式选择");
+    formatCards() {
+      return elements(this.doc, "section.ad-format-card");
+    }
+    async selectFormat(format, identity) {
+      if (!this.onCreateRoute() || !this.formatCards().length) {
+        await this.home(identity);
+        const add = elements(this.doc, 'material-button[aria-label="添加广告单元"], [role="button"][aria-label="添加广告单元"]');
+        click(one(add, "添加广告单元"), "添加广告单元");
+        await this.wait(() => this.formatCards().length > 0, "等待广告格式选择");
+      }
       const label = FORMAT_PAGE[format];
-      const cards = elements(this.doc, "section.ad-format-card").filter((card2) => {
+      const cards = this.formatCards().filter((card2) => {
         const title = txt(card2.querySelector(".header span") || card2.querySelector(".header"));
-        return ZH[format].some((value) => title === value);
-      }).filter((card2) => !/激励/.test(txt(card2)));
+        return formatFrom(title) === format;
+      });
       const card = one(cards, `定位${label}格式卡片`);
-      const button = elements(card, 'material-button.select-button, [role="button"]').filter((e) => ZH[format].some((value) => accessibleName(e) === value));
+      const button = elements(card, 'material-button.select-button, [role="button"]').filter((e) => formatFrom(accessibleName(e)) === format);
       click(one(button, `选择${label}`), `选择${label}`);
       await this.wait(() => this.activeForm(), `等待${label}创建表单`);
     }
     floorRadio(mode) {
-      const radios = elements(this.doc, '[role="radio"], input[type="radio"]');
-      const found = radios.filter((e) => ZH[mode].some((label) => sameLabel(accessibleName(e), [label]) || sameLabel(txt(e), [label])));
+      const groups = elements(this.doc, "ecpm-settings-controls > material-radio-group");
+      const group = groups.length ? one(groups, "底价模式主选项组") : void 0;
+      const radios = elements(group || this.doc, '[role="radio"], input[type="radio"]').filter((control) => !group || control.closest("material-radio-group") === group);
+      const found = radios.filter((control) => {
+        const content = [...control.children].find((child) => child.matches("div.content"));
+        const labels = content ? [fieldText(content)] : [accessibleName(control), fieldText(control)];
+        for (const id of (control.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean)) labels.push(fieldText(this.doc.getElementById(id)));
+        if (control.tagName === "INPUT") for (const label of control.labels || []) labels.push(fieldText(label));
+        return ZH[mode].some((label) => labels.some((value) => sameLabel(value, [label])));
+      });
       return found.length ? one(found, "底价模式选项") : void 0;
     }
     async selectFloorMode(mode, checkpoint) {
@@ -1039,29 +1264,32 @@
       if (currencyOf(input) !== "USD") throw new AdapterError("CURRENCY", "底价控件关联币种不是 USD");
       return { wrap, input };
     }
-    async prepare(identity, format, name, floor, checkpoint, mode = "manual") {
+    async prepare(identity, format, name, floor, checkpoint, mode = "manual", partnerBidding = false) {
       this.prepared = void 0;
       this.submitted = false;
       await checkpoint();
       await this.assertIdentity(identity);
-      if (!this.activeForm()) await this.selectFormat(format);
+      if (!this.activeForm()) await this.selectFormat(format, identity);
       const form = required(this.activeForm(), "未识别到创建广告单元表单");
       await checkpoint();
       await this.assertIdentity(identity);
       const declared = this.formatLabel();
       if (!formatFrom(declared) || formatFrom(declared) !== format) throw new AdapterError("STRUCTURE", `创建表单广告格式“${declared || "未知"}”与请求不一致`);
+      const partnerControlPresent = await this.setPartnerBidding(form, partnerBidding, checkpoint);
       const nameInput = this.nameInput(form);
       const counter = this.counter(form.closest("main") || this.doc);
       const maxLength = counter?.max ?? nameInput.maxLength;
       if (maxLength >= 0 && name.length > maxLength) throw new AdapterError("ROW", `名称超过当前页面上限 ${maxLength}，未截断`, false);
       await this.setInput(nameInput, name, "广告单元名称");
       let floorInput;
-      if (mode === "manual") {
-        ({ input: floorInput } = await this.manualFloorControl(checkpoint));
-        checkConstraints(floorInput, floor);
-        await this.setInput(floorInput, normalizeDecimal(floor), "全局底价");
-        if (!inputMatchesValue(floorInput, floor)) throw new AdapterError("ROW", "底价输入回读不一致，未执行提交", false);
-      } else await this.selectFloorMode(mode, checkpoint);
+      if (!partnerBidding) {
+        if (mode === "manual") {
+          ({ input: floorInput } = await this.manualFloorControl(checkpoint));
+          checkConstraints(floorInput, floor);
+          await this.setInput(floorInput, normalizeDecimal(floor), "全局底价");
+          if (!inputMatchesValue(floorInput, floor)) throw new AdapterError("ROW", "底价输入回读不一致，未执行提交", false);
+        } else await this.selectFloorMode(mode, checkpoint);
+      }
       const errors = this.errorText(form);
       if (errors) throw new AdapterError("ROW", errors, false);
       if (nameInput.getAttribute("aria-invalid") === "true" || floorInput?.getAttribute("aria-invalid") === "true") throw new AdapterError("ROW", "名称或底价未通过页面校验，未执行提交", false);
@@ -1070,7 +1298,9 @@
       const create = elements(this.doc, 'material-button.btn-yes, [role="button"]').filter((e) => sameLabel(txt(e), ["创建广告单元"]));
       const createButton = one(create, "创建广告单元按钮");
       if (!enabled(createButton)) throw new AdapterError("ROW", "创建广告单元按钮仍不可用，底价或名称未通过页面校验", false);
-      this.prepared = { identity, format, name, floor: mode === "manual" ? normalizeDecimal(floor) : "", mode, nameInput, floorInput, form };
+      this.assertPlatformDefaults(form);
+      this.assertPartnerBidding(form, partnerBidding, partnerControlPresent);
+      this.prepared = { identity, format, name, floor: !partnerBidding && mode === "manual" ? normalizeDecimal(floor) : "", mode, partnerBidding, partnerControlPresent, nameInput, floorInput, form };
     }
     async submit(beforeClick) {
       const state = this.prepared;
@@ -1079,56 +1309,103 @@
       const form = this.activeForm();
       if (!form || form !== state.form) throw new AdapterError("STRUCTURE", "提交前表单被替换，需重新预检");
       const nameInput = this.nameInput(form);
-      const radio = required(this.floorRadio(state.mode), "提交前缺少底价模式选项");
       if (nameInput.value !== state.name) throw new AdapterError("STRUCTURE", "提交前名称发生变化");
-      if (!(radio.getAttribute("aria-checked") === "true" || radio.checked === true)) throw new AdapterError("STRUCTURE", "提交前底价模式发生变化");
-      if (state.mode === "manual") {
-        const floorWrap = required(this.doc.querySelector("manual-ecpm-floor-input"), "提交前缺少底价组件");
-        const floorInput = required(floorWrap.querySelector("input"), "提交前缺少底价输入");
-        if (!inputMatchesValue(floorInput, state.floor)) throw new AdapterError("STRUCTURE", "提交前名称或底价发生变化");
-        if (currencyOf(floorInput) !== "USD") throw new AdapterError("CURRENCY", "提交前底价币种不是 USD");
-        checkConstraints(floorInput, state.floor);
+      if (!state.partnerBidding) {
+        const radio = required(this.floorRadio(state.mode), "提交前缺少底价模式选项");
+        if (!(radio.getAttribute("aria-checked") === "true" || radio.checked === true)) throw new AdapterError("STRUCTURE", "提交前底价模式发生变化");
+        if (state.mode === "manual") {
+          const floorWrap = required(this.doc.querySelector("manual-ecpm-floor-input"), "提交前缺少底价组件");
+          const floorInput = required(floorWrap.querySelector("input"), "提交前缺少底价输入");
+          if (!inputMatchesValue(floorInput, state.floor)) throw new AdapterError("STRUCTURE", "提交前名称或底价发生变化");
+          if (currencyOf(floorInput) !== "USD") throw new AdapterError("CURRENCY", "提交前底价币种不是 USD");
+          checkConstraints(floorInput, state.floor);
+        }
       }
       if (formatFrom(this.formatLabel()) !== state.format) throw new AdapterError("STRUCTURE", "提交前广告格式发生变化");
       const create = elements(this.doc, 'material-button.btn-yes, [role="button"]').filter((e) => sameLabel(txt(e), ["创建广告单元"]));
       const createButton = one(create, "提交前创建按钮");
       if (!enabled(createButton)) throw new AdapterError("ROW", "提交前创建按钮不可用", false);
+      this.assertPlatformDefaults(form);
+      this.assertPartnerBidding(form, state.partnerBidding, state.partnerControlPresent);
       beforeClick?.();
       this.submitted = true;
       click(createButton, "创建广告单元");
     }
-    async verifyById(identity, unitId, name, format, floor, mode = "manual") {
+    async verifyById(identity, unitId, name, format, floor, mode = "manual", partnerBidding = false) {
       await this.assertIdentity(identity);
       if (!UNIT_RX.test(unitId) || !unitId.startsWith(`ca-app-${identity.publisherId}/`)) {
         throw new AdapterError("VERIFY", "已知广告位 ID 与当前发布商不匹配", true, { unitId, publisherId: identity.publisherId, appId: identity.appId });
       }
-      await this.home();
-      const search = this.searchInput();
-      if (!search) throw new AdapterError("VERIFY", "未找到广告单元搜索框，无法按已知 ID 核验");
-      await this.setInput(search, unitId, "按已知广告位 ID 搜索");
-      try {
-        this.grid()?.scrollIntoView({ block: "start", inline: "nearest" });
-      } catch {
+      const app = identity.appId.match(APP_RX);
+      const known = unitId.match(UNIT_RX);
+      if (!app || !known || app[1] !== known[1] || `pub-${app[1]}` !== identity.publisherId) throw new AdapterError("IDENTITY", "应用和广告单元的发布商不一致");
+      const listPath = `/v2/apps/${app[2]}/adunits/list`;
+      let directlyOpened = false;
+      if (this.canRouteWithinDocument()) {
+        const detailPath = `/v2/apps/${app[2]}/adunits/${known[2]}/edit`;
+        let fingerprint = "", firstObserved = 0;
+        const settled = () => {
+          if (this.doc.location.pathname !== detailPath || this.activeForm() || this.savedField("广告单元 ID") !== unitId) {
+            fingerprint = "";
+            return false;
+          }
+          const savedName2 = this.savedField("广告单元名称"), savedFormat2 = this.savedField("广告格式");
+          const savedFloor = partnerBidding ? void 0 : this.savedField("有效每千次展示费用底价");
+          if (savedName2 === void 0 || savedFormat2 === void 0 || !partnerBidding && savedFloor === void 0) {
+            fingerprint = "";
+            return false;
+          }
+          const current = JSON.stringify([unitId, savedName2, savedFormat2, savedFloor]);
+          if (current !== fingerprint) {
+            fingerprint = current;
+            firstObserved = Date.now();
+            return false;
+          }
+          return Date.now() - firstObserved >= 200;
+        };
+        for (let attempt = 0; attempt < 2 && !directlyOpened; attempt++) {
+          try {
+            await this.routeWithinDocument(detailPath, settled, "按已知 ID 打开保存后配置", this.timeout);
+            directlyOpened = true;
+          } catch (error) {
+            if (settled()) {
+              directlyOpened = true;
+              break;
+            }
+            if (!(error instanceof AdapterError) || error.code !== "TIMEOUT" || attempt === 1) break;
+            this.targetListApp(identity);
+          }
+        }
       }
-      const matches = await this.wait(() => {
-        if (this.searchInput()?.value.trim() !== unitId) return void 0;
-        const exact = this.rows().filter((candidate) => this.rowInfo(candidate)?.unitId === unitId);
-        return exact.length ? exact : void 0;
-      }, "等待已知广告位 ID 搜索结果", 2e4).catch((error) => {
-        if (error instanceof AdapterError && error.code === "TIMEOUT") return [];
-        throw error;
-      });
-      if (matches.length !== 1) throw new AdapterError("VERIFY", "按已知广告位 ID 未找到唯一记录", true, { unitId, publisherId: identity.publisherId, appId: identity.appId });
-      const row = matches[0];
-      const cell = row.querySelector('ess-cell[essfield="ad-unit-with-id-info"]');
-      const clickable = cell?.querySelector('a[href*="/adunits/"], .u-primary-text.u-clickable-link, [role="link"]') || cell || row;
-      click(clickable, "打开已知广告位保存后编辑页");
-      await this.wait(() => !this.onListRoute() && !this.activeForm() && this.savedField("广告单元 ID"), "等待已知广告位保存后编辑页");
+      if (!directlyOpened) {
+        await this.home(identity);
+        const search = this.searchInput();
+        if (!search) throw new AdapterError("VERIFY", "未找到广告单元搜索框，无法按已知 ID 核验");
+        await this.setInput(search, unitId, "按已知广告位 ID 搜索");
+        try {
+          this.grid()?.scrollIntoView({ block: "start", inline: "nearest" });
+        } catch {
+        }
+        const matches = await this.wait(() => {
+          if (this.searchInput()?.value.trim() !== unitId) return void 0;
+          const exact = this.rows().filter((candidate) => this.rowInfo(candidate)?.unitId === unitId);
+          return exact.length ? exact : void 0;
+        }, "等待已知广告位 ID 搜索结果", 2e4).catch((error) => {
+          if (error instanceof AdapterError && error.code === "TIMEOUT") return [];
+          throw error;
+        });
+        if (matches.length !== 1) throw new AdapterError("VERIFY", "按已知广告位 ID 未找到唯一记录", true, { unitId, publisherId: identity.publisherId, appId: identity.appId });
+        const row = matches[0];
+        const cell = row.querySelector('ess-cell[essfield="ad-unit-with-id-info"]');
+        const clickable = cell?.querySelector('a[href*="/adunits/"], .u-primary-text.u-clickable-link, [role="link"]') || cell || row;
+        click(clickable, "打开已知广告位保存后编辑页");
+        await this.wait(() => !this.onListRoute() && !this.activeForm() && this.savedField("广告单元 ID"), "等待已知广告位保存后编辑页");
+      }
       await this.assertIdentity(identity);
       const savedUnit = this.savedField("广告单元 ID");
       const savedName = this.savedField("广告单元名称");
       const savedFormat = formatFrom(this.savedField("广告格式"));
-      const parsed = this.savedFloor(this.savedField("有效每千次展示费用底价"));
+      const parsed = partnerBidding ? { mode: "partner-bidding", floor: "", currency: "", verified: true } : this.savedFloor(this.savedField("有效每千次展示费用底价"));
       const actual = {
         unitId,
         publisherId: identity.publisherId,
@@ -1143,11 +1420,16 @@
       if (savedUnit !== unitId) throw new AdapterError("VERIFY", "保存后编辑页广告位 ID 与已知 ID 不一致", true, actual);
       if (savedName !== name) throw new AdapterError("VERIFY", "保存后广告单元名称与请求不一致", true, actual);
       if (savedFormat !== format) throw new AdapterError("VERIFY", "保存后广告格式与请求不一致", true, actual);
-      if (!parsed.verified || !matchesFloor(parsed, floor, mode)) {
+      if (!partnerBidding && (!parsed.verified || !matchesFloor(parsed, floor, mode))) {
         throw new AdapterError("VERIFY", "保存后底价模式或金额与请求不一致", true, actual);
       }
+      this.assertSavedPartnerBidding(partnerBidding, actual);
       actual.verified = true;
-      await this.backToList();
+      try {
+        if (directlyOpened) await this.routeWithinDocument(listPath, () => this.listReady(app[2]), "返回广告单元列表", 4e3, true);
+        else await this.backToList(identity);
+      } catch {
+      }
       return actual;
     }
     creationReceipt() {
@@ -1183,13 +1465,13 @@
       for (const link of elements(unitRows[0], "a[href]")) {
         const url = new URL(link.getAttribute("href"), this.doc.location.href);
         if (url.hostname !== "developers.google.com") continue;
-        const match = url.pathname.match(/^\/admob\/(?:android|ios)\/(interstitial|app-open|native)(?:\/|$)/);
+        const match = url.pathname.match(/^\/admob\/(?:android|ios)\/(banner|interstitial|rewarded-interstitial|rewarded|app-open|native)(?:\/|$)/);
         if (match) formats.add(match[1]);
       }
       if (formats.size !== 1) return fail("广告单元植入指南未明确对应唯一广告格式");
       const format = [...formats][0];
-      const iconFormat = (unit.image.getAttribute("src") || "").match(/admob_format_(interstitial|app_open|app-open|native)_icon/);
-      if (iconFormat && iconFormat[1].replace("_", "-") !== format) return fail("广告格式图标与植入指南冲突");
+      const iconFormat = (unit.image.getAttribute("src") || "").match(/admob_format_(banner|interstitial|rewarded_interstitial|rewarded-interstitial|rewarded|app_open|app-open|native)_icon/);
+      if (iconFormat && iconFormat[1].replaceAll("_", "-") !== format) return fail("广告格式图标与植入指南冲突");
       return { unitId: unit.id, appId: app.id, publisherId: `pub-${unitMatch[1]}`, name: unit.name, appName: app.name, format };
     }
     recoverCreatedId(identity, name, format) {
@@ -1213,7 +1495,7 @@
       if (!UNIT_RX.test(unitId)) throw new AdapterError("VERIFY", "取得的广告单元 ID 格式无效", true);
       return unitId;
     }
-    async verify(identity, format, name, floor, mode = "manual") {
+    async verify(identity, format, name, floor, mode = "manual", partnerBidding = false) {
       await this.assertIdentity(identity);
       const unitId = await this.waitForUnitId();
       const partial = { unitId, publisherId: identity.publisherId, appId: identity.appId, verified: false };
@@ -1221,20 +1503,20 @@
         if (!unitId.startsWith(`ca-app-${identity.publisherId}/`)) throw new AdapterError("IDENTITY", "广告单元 ID 所属发布商不一致");
         if (this.creationReceipt()) {
           if (this.recoverCreatedId(identity, name, format) !== unitId) throw new AdapterError("VERIFY", "创建完成说明的广告单元 ID 发生变化");
-          return await this.verifyById(identity, unitId, name, format, floor, mode);
+          return await this.verifyById(identity, unitId, name, format, floor, mode, partnerBidding);
         }
         if (this.activeForm()) throw new AdapterError("VERIFY", "仍停留在可编辑创建表单，不能作为已保存配置证据");
         const savedUnit = this.savedField("广告单元 ID");
         if (savedUnit !== unitId) throw new AdapterError("VERIFY", "保存后详情的广告单元 ID 与最初取得的 ID 不一致");
         const savedName = this.savedField("广告单元名称");
         const savedFormat = formatFrom(this.savedField("广告格式"));
-        const floorText = this.savedField("有效每千次展示费用底价");
-        const parsed = this.savedFloor(floorText);
+        const parsed = partnerBidding ? { mode: "partner-bidding", floor: "", currency: "", verified: true } : this.savedFloor(this.savedField("有效每千次展示费用底价"));
         Object.assign(partial, { name: savedName, format: savedFormat, mode: parsed.mode, floor: parsed.floor ?? (parsed.mode === "auto" || parsed.mode === "disabled" ? "" : void 0), currency: parsed.currency });
-        if (!savedName || !savedFormat || parsed.mode === "unknown" || mode === "manual" && !parsed.floor) throw new AdapterError("VERIFY", "已取得 ID，但保存后页面缺少名称、格式或底价字段");
-        if (savedName !== name || savedFormat !== format || !matchesFloor(parsed, floor, mode)) {
+        if (!savedName || !savedFormat || !partnerBidding && (parsed.mode === "unknown" || mode === "manual" && !parsed.floor)) throw new AdapterError("VERIFY", "已取得 ID，但保存后页面缺少名称、格式或底价字段");
+        if (savedName !== name || savedFormat !== format || !partnerBidding && !matchesFloor(parsed, floor, mode)) {
           throw new AdapterError("VERIFY", "已创建，但保存后配置与请求不一致");
         }
+        this.assertSavedPartnerBidding(partnerBidding, partial);
         return { ...partial, verified: true };
       } catch (error) {
         if (error instanceof AdapterError) {
@@ -1278,7 +1560,13 @@
     return !!task.intentAt || ["uncertain", "created-unverified", "submitting", "verifying"].includes(task.status);
   }
   function canDispatch(batch, busy) {
-    return batch.phase === "running" && busy < (batch.canaryPassed ? batch.concurrency : 1);
+    return batch.phase === "running" && busy < (batch.execution === "tabs" ? batch.concurrency : 1);
+  }
+  function canSubmitPrepared(batch, task) {
+    if (!batch || batch.phase !== "running" || !batch.tasks.some((row) => row.id === task.id && row.assignmentId === task.assignmentId && row.workerId === task.workerId)) return false;
+    if (batch.execution !== "tabs" || batch.canaryPassed) return true;
+    const first = batch.tasks.find((row) => !["success", "exists", "failed", "conflict", "stopped"].includes(row.status));
+    return first?.id === task.id;
   }
   function canRecoverUnsubmitted(job, batch, command, journal) {
     const task = batch.tasks.find((task2) => task2.id === job.task.id);
@@ -1296,6 +1584,20 @@
     if (className) node.className = className;
     return node;
   }
+  var PREVIEW_STYLE = `
+.prefix-switch,.bidding-option{display:inline-flex;align-items:center;gap:7px;cursor:pointer}
+.input-table input[readonly]{background:#f1f5fa;color:#324c6b}
+.creation-preview{width:min(790px,calc(100vw - 32px));max-height:calc(100vh - 48px);padding:18px 20px;border:1px solid #bac9dc;border-radius:10px;color:#192331;background:white;box-shadow:0 12px 44px #12263f44}
+.creation-preview::backdrop{background:#12263f80}
+.creation-preview .table-scroll{max-height:min(45vh,380px);margin:12px 0}
+.creation-preview td{overflow-wrap:anywhere}
+.creation-preview th:first-child{min-width:140px}
+.preview-actions{justify-content:flex-end}
+.run-feedback{position:sticky;top:0;z-index:3;padding:8px 14px;background:white;border-bottom:1px solid #d5e1ef}
+.run-feedback .notice{margin:0}
+.run-feedback a{display:inline-block;margin-top:6px;padding:5px 9px;color:#155db4;border:1px solid #bac9dc;border-radius:5px}
+.run-feedback a[hidden]{display:none}
+`;
   function option(value, label) {
     const node = element("option", label);
     node.value = value;
@@ -1318,7 +1620,7 @@
     const host = element("div");
     host.id = "abc-panel-host";
     const shadow = host.attachShadow({ mode: "open" });
-    shadow.append(element("style", STYLE));
+    shadow.append(element("style", STYLE + PREVIEW_STYLE));
     const shell = element("aside", void 0, "shell");
     shell.setAttribute("aria-label", "AdMob 批量创建广告位");
     const head = element("header", void 0, "head");
@@ -1338,18 +1640,22 @@
     const state = { ready: false, checks: [], busy: false };
     let localBusy = false;
     let inputRows = [];
-    const sourceIssues = /* @__PURE__ */ new WeakMap();
-    const nameOnlyHeaders = /* @__PURE__ */ new WeakSet();
-    const prefixBases = /* @__PURE__ */ new WeakMap();
-    let confirmedIdentity;
+    let pendingPreview;
     let renderedBatch = "";
     let restoredBatchId = "";
     let lastBatchPhase = "";
+    let editorBatchId = "";
+    const clearedStoppedEditors = /* @__PURE__ */ new Set();
+    const updateObservedInputs = [];
     const editableControls = [];
     const buttons = {};
+    const feedback = element("div", void 0, "run-feedback");
+    feedback.hidden = true;
     const notice = element("div", "", "notice");
     notice.setAttribute("role", "status");
     notice.setAttribute("aria-live", "polite");
+    feedback.append(notice);
+    body.append(feedback);
     const section = (heading) => {
       const n = element("section");
       n.append(element("h3", heading));
@@ -1357,7 +1663,6 @@
       return n;
     };
     const accountSection = section("当前页面");
-    accountSection.prepend(notice);
     const identityList = element("dl", void 0, "identity");
     const identityValues = {};
     for (const [key, label] of [["publisherId", "发布商 ID"], ["appName", "当前应用"], ["appId", "AdMob App ID"]]) {
@@ -1388,7 +1693,7 @@
       buttons[key] = b;
       b.dataset.action = key;
       b.addEventListener("click", () => {
-        void invoke(callback);
+        if (!b.disabled) void invoke(callback);
       });
       return b;
     }
@@ -1398,112 +1703,91 @@
     workerLink.target = "_blank";
     workerLink.rel = "noopener";
     workerLink.hidden = true;
-    accountActions.append(button("identify", "重新识别", actions.identify), button("probe", "检测跨页能力", actions.probe), button("diagnostics", "导出脱敏诊断", actions.diagnostics), workerLink);
+    accountActions.append(button("identify", "重新识别", actions.identify), button("probe", "检测跨页能力", actions.probe), button("diagnostics", "导出脱敏诊断", actions.diagnostics));
+    feedback.append(workerLink);
     accountSection.append(accountActions, capabilities);
     accountSection.append(element("p", "按所选底价模式创建，每条取得新 ID 后自动核验保存配置。", "muted spacer"));
     const settings = section("整批设置");
     const config = element("div", void 0, "config");
     const format = element("select");
     format.setAttribute("aria-label", "广告格式");
-    format.append(option("interstitial", "插页式 / 插屏"), option("app-open", "开屏"), option("native", "信息流（原生广告）"));
+    for (const value of ["interstitial", "app-open", "banner", "native", "rewarded", "rewarded-interstitial"]) {
+      format.append(option(value, value === "interstitial" ? "插页式 / 插屏" : FORMAT_ZH[value]));
+    }
     const mode = element("select");
     mode.setAttribute("aria-label", "底价模式");
     for (const value of ["manual", "auto", "disabled"]) mode.append(option(value, MODE_ZH[value]));
     mode.value = "manual";
-    const concurrency = element("select");
-    concurrency.setAttribute("aria-label", "并发数");
-    concurrency.append(option("1", "1 个执行页"), option("2", "2 个执行页"), option("3", "3 个执行页"), option("4", "4 个执行页"), option("5", "5 个执行页（默认）"));
-    concurrency.value = "5";
+    const partnerBidding = element("input");
+    partnerBidding.type = "checkbox";
+    partnerBidding.setAttribute("aria-label", "合作平台出价");
+    const biddingLabel = element("label", void 0, "bidding-option spacer");
+    biddingLabel.append(partnerBidding, element("span", "合作平台出价"));
+    partnerBidding.addEventListener("change", () => {
+      if (partnerBidding.checked) applyPrefix.checked = false;
+      invalidate();
+      renderRows();
+    });
     const execution = element("select");
     execution.setAttribute("aria-label", "执行方式");
-    execution.append(option("tabs", "主控 + 执行标签页"), option("single", "单页模式（当前页执行）"));
-    const controls = [["广告格式", format], ["底价模式", mode], ["并发数", concurrency], ["执行方式", execution]];
+    execution.append(option("paged", "并发"), option("single", "串行（当前页逐条执行）"));
+    const controls = [["广告格式", format], ["底价模式", mode], ["执行方式", execution]];
     for (const [labelText, control] of controls) {
       const label = element("label", void 0, "field");
       label.append(element("span", labelText), control);
       config.append(label);
     }
-    editableControls.push(format, mode, concurrency, execution);
-    settings.append(config);
-    const modeNote = element("p", "先核验首条，再扩展并发；这是插件配置，并非 AdMob 官方额度。", "muted spacer mode-note");
+    editableControls.push(format, mode, execution, partnerBidding);
+    settings.append(config, biddingLabel);
+    const modeNote = element("p", "", "muted spacer mode-note");
     settings.append(modeNote);
-    for (const control of [format, concurrency, execution]) control.addEventListener("change", () => {
+    const biddingNote = element("p", "", "muted spacer");
+    settings.append(biddingNote);
+    execution.addEventListener("change", () => invalidate());
+    format.addEventListener("change", () => {
+      if (format.value === "rewarded-interstitial") partnerBidding.checked = false;
       invalidate();
-      concurrency.disabled = execution.value === "single" || isFrozen() || isBusy();
-      modeNote.textContent = execution.value === "single" ? "单页模式只操作当前页面；仍需可靠的主控互斥。" : "先核验首条，再扩展并发；这是插件配置，并非 AdMob 官方额度。";
+      renderRows();
     });
     mode.addEventListener("change", () => {
-      if (mode.value !== "manual") {
-        inputRows = inputRows.filter((row) => !nameOnlyHeaders.has(row));
-        for (const row of inputRows) sourceIssues.set(row, (sourceIssues.get(row) ?? []).filter((error) => !/应为两列，实际为 1 列/.test(error)));
-        syncPaste();
-      }
+      if (mode.value !== "manual") applyPrefix.checked = false;
       invalidate();
       renderRows();
     });
-    const inputSection = section("创建清单");
-    const pasteLabel = element("label", void 0, "field");
-    const pasteCaption = element("span");
-    pasteLabel.append(pasteCaption);
-    const paste = element("textarea", void 0, "paste");
-    paste.placeholder = "广告位名称,底价USD\nUS_NEW_INT_60,60\nUS_NEW_INT_40,40";
-    paste.setAttribute("aria-label", "CSV 或 TSV 输入");
-    pasteLabel.append(paste);
-    inputSection.append(pasteLabel);
-    editableControls.push(paste);
-    const inputActions = element("div", void 0, "actions spacer");
-    paste.addEventListener("input", () => {
-      inputRows = parsedRows(paste.value);
-      invalidate();
-      renderRows();
-    });
-    const file = element("input", void 0, "file");
-    file.type = "file";
-    file.accept = ".csv,.tsv,text/csv,text/tab-separated-values";
-    file.setAttribute("aria-label", "导入 CSV 或 TSV");
-    file.addEventListener("change", () => {
-      const selected = file.files?.[0];
-      if (!selected) return;
-      void invoke(async () => {
-        paste.value = await selected.text();
-        inputRows = parsedRows(paste.value);
-        invalidate();
-        renderRows();
-        file.value = "";
-      });
-    });
+    const inputSection = element("section");
+    body.append(inputSection);
     const add = element("button", "增加一行");
     add.type = "button";
     add.addEventListener("click", () => {
       inputRows.push({ line: Math.max(0, ...inputRows.map((r) => r.line)) + 1, name: "", floor: "", errors: [] });
       invalidate();
       renderRows();
-      rowNodes.at(-1)?.name.focus();
+      const row = rowNodes.at(-1);
+      (applyPrefix.checked ? row?.floor : row?.name)?.focus();
     });
-    editableControls.push(file, add);
-    inputActions.append(file, add);
-    inputSection.append(inputActions);
+    editableControls.push(add);
     const prefixRow = element("div", void 0, "actions spacer");
     const prefix = element("input");
     prefix.type = "text";
     prefix.placeholder = "例如 admob_int_";
     prefix.setAttribute("aria-label", "名称前缀");
-    const applyPrefix = element("button", "批量应用前缀");
-    applyPrefix.type = "button";
-    applyPrefix.addEventListener("click", () => {
-      for (const row of inputRows) {
-        if (!prefixBases.has(row)) prefixBases.set(row, row.name);
-        const base = prefixBases.get(row);
-        row.name = prefix.value && !base.startsWith(prefix.value) ? prefix.value + base : base;
-      }
-      syncPaste();
+    const applyPrefix = element("input");
+    applyPrefix.type = "checkbox";
+    applyPrefix.setAttribute("role", "switch");
+    applyPrefix.setAttribute("aria-label", "批量应用前缀");
+    const prefixLabel = element("label", void 0, "prefix-switch");
+    prefixLabel.append(applyPrefix, element("span", "批量应用前缀"));
+    applyPrefix.addEventListener("change", () => {
       invalidate();
-      renderRows();
+      validateRows();
     });
-    prefixRow.append(prefix, applyPrefix);
+    prefix.addEventListener("input", () => {
+      invalidate();
+      validateRows();
+    });
+    prefixRow.append(prefixLabel, prefix);
     inputSection.append(prefixRow);
-    editableControls.push(prefix, applyPrefix);
-    const inputSummary = element("p", "尚未导入清单。", "summary");
+    const inputSummary = element("p", "暂无广告位。", "summary");
     inputSummary.setAttribute("aria-live", "polite");
     inputSection.append(inputSummary);
     const inputScroll = element("div", void 0, "table-scroll");
@@ -1517,25 +1801,50 @@
     inputTable.append(inputHead, inputTbody);
     inputScroll.append(inputTable);
     inputSection.append(inputScroll);
-    const amountHint = element("p", "", "muted");
-    inputSection.append(amountHint);
+    inputSection.append(add);
     const runSection = section("执行任务");
     const checklist = element("ul", void 0, "checks");
     runSection.append(checklist);
-    const confirmLabel = element("label", void 0, "confirm");
-    const confirm = element("input");
-    confirm.type = "checkbox";
-    confirmLabel.append(confirm, element("span", "我已核对当前发布商、应用、广告格式、底价模式和创建清单；点击“开始创建”确认整个批次。"));
-    runSection.append(confirmLabel);
-    confirm.addEventListener("change", () => {
-      confirmedIdentity = confirm.checked ? displayedIdentity() : void 0;
-      if (!confirmedIdentity) confirm.checked = false;
-      updateControls();
-    });
     const runActions = element("div", void 0, "actions");
-    runActions.append(button("start", "开始创建", () => actions.start(getConfig()), "primary"), button("pause", "暂停", actions.pause), button("resume", "继续", actions.resume), button("stop", "停止", actions.stop, "danger"));
+    runActions.append(button("start", "开始创建", async () => openPreview(), "primary"), button("pause", "暂停", actions.pause), button("resume", "继续", actions.resume), button("stop", "停止", actions.stop, "danger"));
+    const preview = element("dialog", void 0, "creation-preview");
+    preview.setAttribute("role", "dialog");
+    preview.setAttribute("aria-modal", "true");
+    const previewTitle = element("h2", "创建预览");
+    previewTitle.id = "abc-preview-title";
+    preview.setAttribute("aria-labelledby", previewTitle.id);
+    const previewApp = element("dl", void 0, "identity");
+    const previewTable = element("table");
+    previewTable.setAttribute("aria-label", "即将创建的广告单元");
+    const previewHead = element("thead");
+    const previewHeadRow = element("tr");
+    for (const label of ["广告位名称", "格式", "广告类型", "频次上限", "底价", "合作平台出价"]) previewHeadRow.append(element("th", label));
+    previewHead.append(previewHeadRow);
+    const previewRows = element("tbody");
+    previewTable.append(previewHead, previewRows);
+    const previewScroll = element("div", void 0, "table-scroll");
+    previewScroll.tabIndex = 0;
+    previewScroll.append(previewTable);
+    const previewActions = element("div", void 0, "actions preview-actions");
+    const cancelPreview = element("button", "取消");
+    cancelPreview.type = "button";
+    cancelPreview.dataset.action = "cancel-preview";
+    cancelPreview.autofocus = true;
+    cancelPreview.addEventListener("click", closePreview);
+    preview.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      closePreview();
+    });
+    previewActions.append(cancelPreview, button("confirm-create", "确认创建", confirmPreview, "primary"));
+    preview.append(previewTitle, previewApp, previewScroll, previewActions);
+    shadow.append(preview);
     const recoveryActions = element("div", void 0, "actions spacer");
-    recoveryActions.append(button("retry", "重试明确失败项", actions.retry), button("verify", "核验结果不确定项", actions.verify), button("degrade", "降级为单页", actions.degrade));
+    recoveryActions.append(button("retry", "重试明确失败项", actions.retry), button("verify", "核验结果不确定项", async () => {
+      const archive = displayedArchive();
+      if (archive && actions.verifyHistory) await actions.verifyHistory(archive.id);
+      else await actions.verify();
+    }), button("degrade", "降级为单页", actions.degrade));
+    if (actions.switchToPaged) recoveryActions.append(button("switch-to-paged", "改为并发", actions.switchToPaged));
     buttons.degrade.title = "停止增加执行标签页，保留旧执行页并继续收集其结果；后续任务在当前页执行";
     runSection.append(runActions, recoveryActions);
     const resumeHint = element("p", "", "muted spacer");
@@ -1547,7 +1856,7 @@
     historySelect.setAttribute("aria-label", "任务批次");
     historySelect.append(option("", "当前任务"));
     historySelect.addEventListener("change", () => {
-      clearConfirmation();
+      closePreview();
       if (actions.viewHistory) void invoke(() => actions.viewHistory(historySelect.value));
     });
     historyRow.append(element("span", "历史结果"), historySelect);
@@ -1576,37 +1885,69 @@
     resultSection.append(logsDetails);
     body.append(element("div", "记录仅保存在当前浏览器配置。停止不会删除已创建的广告单元。", "footer"));
     const rowNodes = [];
-    function parsedRows(text) {
-      const rows = parseInput(text, { mode: mode.value });
-      if (mode.value === "manual" && rows.length && parseInput(text, { mode: "auto" }).length === rows.length - 1) nameOnlyHeaders.add(rows[0]);
-      for (const row of rows) sourceIssues.set(row, row.errors.filter((error) => /实际为|引号/.test(error)));
-      return rows;
-    }
-    function serializeRows() {
-      return inputRows.map((row) => `${csvCell2(row.name)},${csvCell2(row.floor)}`).join("\r\n");
-    }
-    function syncPaste() {
-      if (inputRows.every((row) => !sourceIssues.get(row)?.length)) paste.value = serializeRows();
-    }
     function restoreDraftInput(batch) {
       if (!batch || batch.phase === "done" || inputRows.length || restoredBatchId === batch.id) return;
       inputRows = batch.tasks.map((task) => ({ line: task.line, name: task.name, floor: task.floor, errors: [] }));
-      paste.value = serializeRows();
       restoredBatchId = batch.id;
+      editorBatchId = batch.id;
       renderRows();
     }
-    function validateRows() {
-      inputRows.forEach((row) => {
+    function stoppedArchive(batch) {
+      return batch?.phase === "done" && !!batch.stopRequestedAt;
+    }
+    function displayedArchive() {
+      const batch = historySelect.value ? state.historyBatch : state.batch;
+      return stoppedArchive(batch) ? batch : void 0;
+    }
+    function retireStoppedEditor(batch) {
+      if (!stoppedArchive(batch) || clearedStoppedEditors.has(batch.id)) return;
+      clearedStoppedEditors.add(batch.id);
+      const rows = reviewedRows();
+      const matches = rows.length > 0 && rows.length === batch.tasks.length && rows.every((row, index) => row.name === batch.tasks[index].name && row.floor === batch.tasks[index].floor);
+      if (editorBatchId !== batch.id && !matches) return;
+      inputRows = [];
+      editorBatchId = "";
+      applyPrefix.checked = false;
+      state.ready = false;
+      state.checks = [];
+      closePreview();
+      renderRows();
+    }
+    function reviewedRows() {
+      const automaticNames = applyPrefix.checked && manualFloor();
+      const prefixText = prefix.value.trim();
+      const names = /* @__PURE__ */ new Map();
+      const rows = inputRows.map((row) => {
+        let name = row.name;
+        if (automaticNames) {
+          let suffix = "";
+          try {
+            suffix = normalizeDecimal(row.floor);
+          } catch {
+          }
+          name = prefixText && suffix ? prefixText + suffix : "";
+        }
+        const floor = partnerBidding.checked ? "" : row.floor;
         const parsed = parseInput(`广告位名称,底价USD\r
-${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
-        row.errors = [...parsed?.errors ?? ["广告位名称不能为空"], ...(sourceIssues.get(row) ?? []).map((error) => `${error}；请修正粘贴区`)];
+${csvCell2(name)},${csvCell2(floor)}`, { mode: requestedMode() })[0];
+        const errors = parsed?.errors ?? ["广告位名称不能为空"];
+        if (automaticNames && !prefixText) errors.push("请输入名称前缀");
+        if (automaticNames && name) names.set(name, (names.get(name) ?? 0) + 1);
+        return { line: row.line, name, floor: parsed?.floor ?? floor, errors };
       });
-      const errors = inputRows.filter((row) => row.errors.length).length;
-      inputSummary.textContent = inputRows.length ? `共 ${inputRows.length} 行 · ${errors ? `${errors} 行有错误` : "输入有效，开始时自动检查"}` : "尚未导入清单。";
+      for (const row of rows) if ((names.get(row.name) ?? 0) > 1) row.errors.push("按底价生成的广告位名称重复");
+      return rows;
+    }
+    function validateRows() {
+      const rows = reviewedRows();
+      const errors = rows.filter((row) => row.errors.length).length;
+      inputSummary.textContent = rows.length ? `${rows.length} 个广告位${errors ? `，${errors} 行待修正` : ""}` : "暂无广告位。";
       rowNodes.forEach((nodes, index) => {
-        const row = inputRows[index];
-        if (!row) return;
-        nodes.error.textContent = `原始第 ${row.line} 行：${row.errors.join("；")}`;
+        const row = rows[index];
+        inputRows[index].errors = row.errors;
+        nodes.name.readOnly = applyPrefix.checked;
+        if (nodes.name.value !== row.name) nodes.name.value = row.name;
+        nodes.error.textContent = row.errors.join("；");
         nodes.errorRow.hidden = !row.errors.length;
         nodes.name.setAttribute("aria-invalid", String(row.errors.some((error) => /名称|重复|列数|解析/.test(error))));
         nodes.floor.setAttribute("aria-invalid", String(row.errors.some((error) => /底价|金额|数字|十进制|列数|解析/.test(error))));
@@ -1614,12 +1955,9 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       updateControls();
     }
     function renderRows() {
-      pasteCaption.textContent = mode.value === "manual" ? "粘贴 Excel 两列（名称、底价）、TSV 或 CSV" : "粘贴名称清单、TSV 或 CSV";
-      amountHint.textContent = mode.value === "manual" ? "输入 60 表示 60 美元。仅接受明确的十进制金额；不会自动换汇或截断名称。" : "只需填写广告位名称；保存后自动核验所选底价模式。";
       inputTbody.replaceChildren();
       rowNodes.length = 0;
-      inputHeadRow.cells[2].hidden = mode.value !== "manual";
-      paste.placeholder = mode.value === "manual" ? "广告位名称,底价USD\nUS_NEW_INT_60,60\nUS_NEW_INT_40,40" : "广告位名称\nUS_NEW_1\nUS_NEW_2";
+      inputHeadRow.cells[2].hidden = !manualFloor();
       for (const [index, row] of inputRows.entries()) {
         const tr = element("tr");
         const number = element("td", String(row.line));
@@ -1634,7 +1972,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         floorInput.inputMode = "decimal";
         floorInput.value = row.floor;
         floorInput.setAttribute("aria-label", `第 ${row.line} 行底价 USD`);
-        floorCell.hidden = mode.value !== "manual";
+        floorCell.hidden = !manualFloor();
         nameCell.append(nameInput);
         floorCell.append(floorInput);
         const operation = element("td");
@@ -1643,7 +1981,6 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         remove.setAttribute("aria-label", `删除第 ${row.line} 行`);
         remove.addEventListener("click", () => {
           inputRows.splice(index, 1);
-          syncPaste();
           invalidate();
           renderRows();
         });
@@ -1655,51 +1992,82 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         errorRow.append(error);
         inputTbody.append(tr, errorRow);
         rowNodes.push({ name: nameInput, floor: floorInput, error, errorRow, remove });
-        for (const [input, field] of [[nameInput, "name"], [floorInput, "floor"]]) {
-          input.addEventListener("input", () => {
-            row[field] = input.value;
-            nameOnlyHeaders.delete(row);
-            if (field === "name") prefixBases.delete(row);
-            syncPaste();
-            invalidate();
-            validateRows();
-          });
-          input.addEventListener("paste", (event) => {
-            const text = event.clipboardData?.getData("text/plain");
-            if (!text || !/[\t\r\n]/.test(text)) return;
-            event.preventDefault();
-            const pasted = parsedRows(text);
-            if (!pasted.length) return;
-            const nextLine = Math.max(0, ...inputRows.map((item) => item.line)) + 1;
-            const mapped = pasted.map((item, offset) => {
-              item.line = inputRows[index + offset]?.line ?? nextLine + offset;
-              return item;
-            });
-            inputRows.splice(index, mapped.length, ...mapped);
-            invalidate();
-            renderRows();
-          });
-        }
+        nameInput.addEventListener("input", () => {
+          if (!applyPrefix.checked) row.name = nameInput.value;
+          invalidate();
+          validateRows();
+        });
+        floorInput.addEventListener("input", () => {
+          row.floor = floorInput.value;
+          invalidate();
+          validateRows();
+        });
       }
       validateRows();
     }
+    function requestedMode() {
+      return partnerBidding.checked ? "disabled" : mode.value;
+    }
+    function manualFloor() {
+      return requestedMode() === "manual";
+    }
     function getConfig() {
-      validateRows();
-      return { format: format.value, mode: mode.value, concurrency: execution.value === "single" ? 1 : Number(concurrency.value), execution: execution.value, text: serializeRows(), rows: structuredClone(inputRows), confirmedIdentity: confirmedIdentity ? { ...confirmedIdentity } : void 0 };
+      const rows = reviewedRows();
+      const text = rows.map((row) => `${csvCell2(row.name)},${csvCell2(row.floor)}`).join("\r\n");
+      return { format: format.value, mode: requestedMode(), partnerBidding: partnerBidding.checked, concurrency: 1, execution: execution.value, text, rows };
     }
     function displayedIdentity() {
       const identity = state.identity;
       if (state.identityError || !identity || !/^pub-\d{16}$/.test(identity.publisherId) || !/^ca-app-pub-\d{16}~\d{10}$/.test(identity.appId) || !identity.appId.startsWith(`ca-app-${identity.publisherId}~`)) return void 0;
       return { publisherId: identity.publisherId, appId: identity.appId };
     }
-    function clearConfirmation() {
-      confirm.checked = false;
-      confirmedIdentity = void 0;
+    function openPreview() {
+      const identity = displayedIdentity();
+      const config2 = getConfig();
+      if (!identity || !config2.rows.length || config2.rows.some((row) => row.errors.length) || isFrozen() || historySelect.value) return;
+      pendingPreview = { ...config2, confirmedIdentity: identity };
+      previewApp.replaceChildren();
+      for (const [label, value] of [
+        ["应用", state.identity.appName],
+        ["AdMob App ID", identity.appId],
+        ["发布商 ID", identity.publisherId]
+      ]) previewApp.append(element("dt", label), element("dd", value));
+      const floorMode = config2.mode ?? "manual";
+      previewRows.replaceChildren(...config2.rows.map((row) => {
+        const tr = element("tr");
+        const floor = config2.partnerBidding ? "不适用" : floorMode === "manual" ? `${row.floor} USD / 千次` : MODE_ZH[floorMode];
+        const reward = config2.format === "rewarded" || config2.format === "rewarded-interstitial";
+        const formatLabel = FORMAT_ZH[config2.format] + (reward ? `（${REWARD_DEFAULT.amount} ${REWARD_DEFAULT.item}）` : "");
+        const media = config2.partnerBidding ? "不适用" : MEDIA_DEFAULTS[config2.format].join(" + ");
+        const frequency = config2.partnerBidding || config2.format === "banner" || config2.format === "native" ? "不适用" : "已停用";
+        for (const value of [row.name, formatLabel, media, frequency, floor, config2.partnerBidding ? "已勾选" : "未勾选"]) tr.append(element("td", value));
+        return tr;
+      }));
+      if (typeof preview.showModal === "function") preview.showModal();
+      else preview.setAttribute("open", "");
+      updateControls();
+      cancelPreview.focus();
+    }
+    function closePreview() {
+      pendingPreview = void 0;
+      if (!preview.open) return;
+      if (typeof preview.close === "function") preview.close();
+      else preview.removeAttribute("open");
+      updateControls();
+      if (!buttons.start.disabled) buttons.start.focus();
+    }
+    async function confirmPreview() {
+      const confirmed = pendingPreview;
+      if (!confirmed || !preview.open || isFrozen() || historySelect.value || state.busy) return;
+      const current = { ...getConfig(), confirmedIdentity: displayedIdentity() };
+      closePreview();
+      if (JSON.stringify(current) !== JSON.stringify(confirmed)) throw new Error("应用或广告位设置发生变化，请重新预览");
+      await actions.start(confirmed);
     }
     function invalidate() {
       state.ready = false;
       state.checks = [];
-      clearConfirmation();
+      closePreview();
       renderChecks();
       updateControls();
     }
@@ -1711,34 +2079,48 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
     }
     function updateControls() {
       const busy = isBusy(), viewingHistory = !!historySelect.value, frozen = isFrozen() || viewingHistory, batch = state.batch;
+      const locked = busy || frozen || !!pendingPreview;
       editableControls.forEach((control) => {
-        control.disabled = busy || frozen;
+        control.disabled = locked;
       });
-      concurrency.disabled = busy || frozen || execution.value === "single";
+      mode.disabled = locked || partnerBidding.checked || applyPrefix.checked;
+      partnerBidding.disabled = locked || format.value === "rewarded-interstitial";
+      biddingNote.textContent = format.value === "rewarded-interstitial" ? "插页式激励广告不支持合作平台出价。" : partnerBidding.checked ? "合作平台出价不设置底价。" : "";
+      modeNote.textContent = execution.value === "single" ? "在当前页逐条创建和核验。" : "按任务数量批量打开创建页，再逐页创建、核验和关闭。";
+      applyPrefix.disabled = locked || !manualFloor();
+      prefix.disabled = locked || !manualFloor();
       rowNodes.forEach((nodes) => {
-        nodes.name.disabled = busy || frozen;
-        nodes.floor.disabled = busy || frozen;
-        nodes.remove.disabled = busy || frozen;
+        nodes.name.disabled = locked;
+        nodes.floor.disabled = locked;
+        nodes.remove.disabled = locked;
       });
       const identity = displayedIdentity();
-      confirm.disabled = busy || frozen || !identity;
       Object.values(buttons).forEach((b) => {
-        b.disabled = busy;
+        b.disabled = busy || !!pendingPreview;
       });
-      historySelect.disabled = busy;
+      buttons["confirm-create"].disabled = busy || frozen || !pendingPreview || !identity;
+      historySelect.disabled = busy || !!pendingPreview;
       const valid = inputRows.length > 0 && inputRows.every((row) => !row.errors.length);
-      buttons.start.disabled = busy || frozen || !valid || !confirm.checked || !identity || !confirmedIdentity || confirmedIdentity.publisherId !== identity.publisherId || confirmedIdentity.appId !== identity.appId;
+      buttons.start.disabled = locked || !valid || !identity;
       buttons.pause.disabled = busy || batch?.phase !== "running";
       const unresolved = batch?.tasks.filter((t) => needsVerification(t) && !["success", "exists"].includes(t.status)).length ?? 0;
-      const resumeBlocked = batch?.phase === "paused" && unresolved > 0;
+      const resumable = !viewingHistory && batch?.phase === "paused" && !!batch.confirmedAt && !batch.stopRequestedAt;
+      const resumeBlocked = resumable && unresolved > 0;
       buttons.resume.disabled = busy || batch?.phase !== "paused" || !batch.confirmedAt || !!batch.stopRequestedAt || resumeBlocked;
       buttons.resume.title = resumeBlocked ? `还有 ${unresolved} 条提交结果或配置待核验，请先核验` : "";
       resumeHint.textContent = resumeBlocked ? `还有 ${unresolved} 条提交结果或配置待核验。请先点击“核验结果不确定项”，核验通过后再继续；只读预检和核验均不提交广告位。` : "";
+      resumeHint.hidden = !resumeBlocked;
       buttons.stop.disabled = busy || !batch || !["draft", "running", "paused", "stopping"].includes(batch.phase);
-      buttons.retry.disabled = busy || !batch || batch.phase === "running" || batch.phase === "stopping" || !batch.tasks.some((t) => t.status === "failed" && !t.intentAt && !t.actual?.unitId && t.attempts < 3);
+      buttons.retry.disabled = busy || !batch || !!batch.stopRequestedAt || batch.phase === "running" || batch.phase === "stopping" || !batch.tasks.some((t) => t.status === "failed" && !t.intentAt && !t.actual?.unitId && t.attempts < 3);
       buttons.verify.disabled = busy || !batch || batch.phase === "running" || !batch.tasks.some((t) => ["uncertain", "created-unverified", "submitting", "verifying"].includes(t.status));
       buttons.degrade.disabled = busy || !batch || batch.execution !== "tabs" || !["running", "paused"].includes(batch.phase);
-      for (const key of ["pause", "resume", "stop", "retry", "verify", "degrade"]) if (viewingHistory) buttons[key].disabled = true;
+      if (buttons["switch-to-paged"]) buttons["switch-to-paged"].disabled = busy || viewingHistory || batch?.execution !== "tabs" || batch.phase !== "paused" || unresolved > 0;
+      for (const key of ["pause", "resume", "stop", "retry", "degrade"]) if (viewingHistory) buttons[key].disabled = true;
+      if (viewingHistory || stoppedArchive(batch)) {
+        const archive = displayedArchive();
+        buttons.verify.disabled = busy || !actions.verifyHistory || !archive || batch?.phase === "running" || batch?.phase === "stopping" || !archive.tasks.some((task) => needsVerification(task) && !["success", "exists"].includes(task.status));
+      }
+      for (const update of updateObservedInputs) update();
       for (const key of ["export-all", "export-success", "export-exceptions", "copy"]) buttons[key].disabled = busy || !(viewingHistory ? state.historyBatch : batch);
     }
     function renderNotice() {
@@ -1750,6 +2132,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       } catch {
       }
       workerLink.hidden = !valid;
+      feedback.hidden = !state.notice && !valid;
       if (valid) workerLink.href = state.workerUrl;
       else workerLink.removeAttribute("href");
     }
@@ -1765,7 +2148,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         li.append(element("span", check.ok ? "✓" : "✕"), element("span", check.label));
         checklist.append(li);
       }
-      if (!state.checks?.length) checklist.append(element("li", "点击开始后自动检查账号、清单和执行页，再创建广告位。", "muted"));
+      if (!state.checks?.length) checklist.append(element("li", "确认预览后检查账号和执行页，再创建广告位。", "muted"));
     }
     function renderHistory() {
       const selected = historySelect.value;
@@ -1795,6 +2178,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       const signature = batch ? JSON.stringify(batch) : "";
       if (signature === renderedBatch) return;
       renderedBatch = signature;
+      updateObservedInputs.length = 0;
       resultTbody.replaceChildren();
       if (!batch) {
         batchMeta.textContent = "暂无批次";
@@ -1802,7 +2186,9 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         logs.textContent = "";
         return;
       }
-      batchMeta.textContent = `批次 ${batch.id} · ${FORMAT_ZH[batch.format]} · ${{ draft: "待开始", running: "执行中", paused: "已暂停", stopping: "停止中，正在收集结果", done: "已结束" }[batch.phase]} · ${batch.execution === "single" ? "单页模式" : `并发 ${batch.concurrency}`}`;
+      const executionLabel = { paged: "并发", single: "串行", tabs: "旧版并行" }[batch.execution];
+      const phaseLabel = stoppedArchive(batch) ? "已停止" : { draft: "待开始", running: "执行中", paused: "已暂停", stopping: "停止中，正在收集结果", done: "已结束" }[batch.phase];
+      batchMeta.textContent = `批次 ${batch.id} · ${FORMAT_ZH[batch.format]} · ${phaseLabel} · ${executionLabel}`;
       const counts = /* @__PURE__ */ new Map();
       for (const task of batch.tasks) {
         counts.set(STATUS_ZH[task.status], (counts.get(STATUS_ZH[task.status]) ?? 0) + 1);
@@ -1811,8 +2197,12 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         const badge = element("span", STATUS_ZH[task.status], `badge ${["success", "exists"].includes(task.status) ? "good" : ["failed", "uncertain", "created-unverified", "conflict"].includes(task.status) ? "bad" : ""}`);
         const status = element("td");
         status.append(badge);
-        tr.append(element("td", String(task.line)), element("td", task.name), element("td", batch.mode === "manual" ? task.floor : MODE_ZH[batch.mode]), element("td", actual?.mode && actual.mode !== "manual" ? MODE_ZH[actual.mode] ?? "未读取" : actual?.floor ? `${actual.floor} ${actual.currency || "币种未确认"}` : "未读取"), status, element("td", actual?.unitId || "—"), element("td", task.reason || "—", "error-cell"));
-        if (!historySelect.value && actions.recordObservedId && batch.phase === "paused" && task.intentAt && needsVerification(task) && !actual?.unitId) {
+        const requested = batch.partnerBidding ? "不适用（合作平台出价）" : batch.mode === "manual" ? task.floor : MODE_ZH[batch.mode];
+        const saved = actual?.mode === "partner-bidding" ? "不适用（合作平台出价）" : actual?.mode && actual.mode !== "manual" ? MODE_ZH[actual.mode] ?? "未读取" : actual?.floor ? `${actual.floor} ${actual.currency || "币种未确认"}` : "未读取";
+        tr.append(element("td", String(task.line)), element("td", task.name), element("td", requested), element("td", saved), status, element("td", actual?.unitId || "—"), element("td", task.reason || "—", "error-cell"));
+        const archived = stoppedArchive(batch);
+        const canRecord = archived ? !!actions.recordHistoryObservedId : !historySelect.value && !!actions.recordObservedId && batch.phase === "paused";
+        if (canRecord && task.intentAt && needsVerification(task) && !["success", "exists"].includes(task.status) && !actual?.unitId) {
           const cell = tr.cells[5];
           const id = element("input");
           id.placeholder = "成功说明中的广告位 ID";
@@ -1821,14 +2211,21 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
           record.type = "button";
           record.dataset.action = "record-observed-id";
           record.dataset.taskId = task.id;
+          if (archived) record.dataset.batchId = batch.id;
           const update = () => {
-            record.disabled = localBusy || !!state.busy || !new RegExp(`^ca-app-${batch.identity.publisherId}/\\d{10}$`).test(id.value.trim());
+            const blocked = localBusy || !!state.busy || archived && ["running", "stopping"].includes(state.batch?.phase || "");
+            id.disabled = blocked;
+            record.disabled = blocked || !new RegExp(`^ca-app-${batch.identity.publisherId}/\\d{10}$`).test(id.value.trim());
           };
+          updateObservedInputs.push(update);
           id.addEventListener("input", update);
           update();
           record.addEventListener("click", () => {
-            if (!record.disabled) void invoke(async () => {
-              await actions.recordObservedId(task.id, id.value.trim());
+            if (record.disabled) return;
+            const unitId = id.value.trim();
+            void invoke(async () => {
+              if (archived) await actions.recordHistoryObservedId(batch.id, task.id, unitId);
+              else await actions.recordObservedId(task.id, unitId);
             });
           });
           cell.append(id, record);
@@ -1855,21 +2252,32 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
     return {
       getConfig,
       update(patch) {
-        const previousIdentity = confirmedIdentity ?? state.identity;
-        if (patch.identityError || "identity" in patch && (patch.identity?.publisherId !== previousIdentity?.publisherId || patch.identity?.appId !== previousIdentity?.appId)) clearConfirmation();
+        const previousIdentity = state.identity;
+        if (patch.identityError || "identity" in patch && (patch.identity?.publisherId !== previousIdentity?.publisherId || patch.identity?.appId !== previousIdentity?.appId || patch.identity?.appName !== previousIdentity?.appName)) closePreview();
         if (patch.batch) {
           const phase = `${patch.batch.id}:${patch.batch.phase}`;
-          if (phase !== lastBatchPhase && patch.batch.phase !== "draft") clearConfirmation();
+          if (phase !== lastBatchPhase) closePreview();
           lastBatchPhase = phase;
         }
         Object.assign(state, patch);
         if (patch.batch && (isFrozen() || patch.batch.phase === "draft")) {
+          const previouslyManual = manualFloor();
           format.value = patch.batch.format;
           mode.value = patch.batch.mode ?? "manual";
-          concurrency.value = String(patch.batch.concurrency);
-          execution.value = patch.batch.execution;
+          execution.value = patch.batch.execution === "single" ? "single" : "paged";
+          partnerBidding.checked = patch.batch.partnerBidding === true;
+          if (!manualFloor()) applyPrefix.checked = false;
+          if (previouslyManual !== manualFloor()) renderRows();
         }
-        if (patch.batch) restoreDraftInput(patch.batch);
+        if (patch.batch) {
+          const batch = patch.batch;
+          retireStoppedEditor(batch);
+          restoreDraftInput(batch);
+          if (!stoppedArchive(batch) && ["draft", "running", "paused", "stopping"].includes(batch.phase)) {
+            const rows = reviewedRows();
+            if (rows.length === batch.tasks.length && rows.every((row, index) => row.name === batch.tasks[index].name && row.floor === batch.tasks[index].floor)) editorBatchId = batch.id;
+          }
+        }
         renderHistory();
         renderIdentity();
         renderNotice();
@@ -1993,6 +2401,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       };
       const poll = setInterval(check, 400);
       const timer = setTimeout(() => {
+        check();
         if (settled) return;
         finish();
         reject(new Error("跨页通信等待超时；不会自动重派原任务"));
@@ -2009,18 +2418,40 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
   }
 
   // src/worker.ts
+  function ownsJournal(job, journal) {
+    return journal.assignmentId === job.assignmentId && journal.taskId === job.task.id && journal.batchId === job.batch.id;
+  }
+  function knownId(job, actual) {
+    return !!actual?.unitId && /^ca-app-pub-\d{16}\/\d{10}$/.test(actual.unitId) && actual.unitId.startsWith(`ca-app-${job.batch.identity.publisherId}/`);
+  }
+  function ownsReport(job, report) {
+    return report.assignmentId === job.assignmentId && report.taskId === job.task.id && report.workerId === job.workerId;
+  }
+  function persistStage(job, report) {
+    const key = "journal:" + job.assignmentId;
+    const previous = get(key, void 0);
+    if (!previous || !ownsJournal(job, previous) || !ownsReport(job, report)) throw new Error("执行进度缺少匹配的持久化分配，已阻止覆盖");
+    if (previous.state === "done") return;
+    const priorId = previous.report?.actual?.unitId;
+    if (priorId && report.actual?.unitId && priorId !== report.actual.unitId) throw new Error("本分配已取得不同广告位 ID，保留原 ID 等待核验");
+    if (priorId && !report.actual?.unitId) return;
+    set(key, { ...previous, report });
+  }
   async function performJob(job, adapter, emit, permission) {
     const { batch, task, assignmentId, workerId } = job;
     const journalKey = "journal:" + assignmentId;
     const old = get(journalKey, void 0);
     const report = (r) => emit({ ...r, assignmentId, taskId: task.id });
     if (old) {
+      if (!ownsJournal(job, old)) throw new Error("持久化分配属于其他任务或批次，禁止执行或覆盖");
       if (old.state === "done" && old.report) {
+        if (!ownsReport(job, old.report)) throw new Error("终态回执与原任务分配不匹配，禁止覆盖");
         await report(old.report);
         return;
       }
       if (old.state === "intent") {
-        await report({ type: "result", status: "uncertain", reason: "执行页在提交意图后恢复，禁止再次点击创建；请核验真实结果" });
+        const actual = old.report && ownsReport(job, old.report) && knownId(job, old.report.actual) ? { ...old.report.actual, verified: false } : void 0;
+        await report({ type: "result", status: actual ? "created-unverified" : "uncertain", actual, reason: "执行页在提交意图后恢复，禁止再次点击创建；请核验真实结果" });
         return;
       }
       if (job.kind === "create") {
@@ -2032,13 +2463,56 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       const identity = await adapter.identify();
       if (!sameIdentity(identity, batch.identity)) throw Object.assign(new Error("发布商或应用与批次不一致"), { fatal: true });
     };
+    const foreground = async () => {
+      if (!job.requireForeground) return;
+      await permission();
+      if (document.visibilityState === "visible") return;
+      await new Promise((resolve, reject) => {
+        let settled = false;
+        const removers = [];
+        const finish = (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          document.removeEventListener("visibilitychange", check);
+          for (const remove of removers) remove();
+          if (error) reject(error);
+          else resolve();
+        };
+        const check = () => {
+          try {
+            permission();
+            if (document.visibilityState === "visible") finish();
+          } catch (error) {
+            finish(error);
+          }
+        };
+        const timer = setTimeout(() => {
+          check();
+          if (!settled) finish(new Error("执行页未到前台，未填写或提交广告位"));
+        }, 3e4);
+        document.addEventListener("visibilitychange", check);
+        for (const key of ["command:" + workerId, "batch:" + batch.identity.publisherId + ":" + batch.identity.appId + ":" + batch.id]) {
+          try {
+            const remove = listen(key, check);
+            if (settled) remove();
+            else removers.push(remove);
+          } catch {
+          }
+        }
+        check();
+      });
+      await permission();
+    };
     const checkpoint = async () => {
       await permission();
+      await foreground();
       await checkIdentity();
     };
     let intent = !!task.intentAt || job.kind === "verify";
     let latestActual = task.actual;
     try {
+      await foreground();
       await checkIdentity();
       if (job.kind === "verify") {
         if (!task.actual?.unitId) {
@@ -2047,7 +2521,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         }
         if (task.actual?.unitId && adapter.verifyById) {
           try {
-            const actual3 = await adapter.verifyById(batch.identity, task.actual.unitId, task.name, batch.format, task.floor, batch.mode ?? task.mode ?? "manual");
+            const actual3 = await adapter.verifyById(batch.identity, task.actual.unitId, task.name, batch.format, task.floor, batch.mode ?? task.mode ?? "manual", batch.partnerBidding);
             await report({ type: "result", status: actual3.verified ? "success" : "created-unverified", actual: actual3, reason: actual3.verified ? "按已知广告位 ID 核验保存配置一致" : "已取得 ID，保存后配置未完整核验" });
           } catch (error) {
             const e = error;
@@ -2055,7 +2529,11 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
           }
           return;
         }
-        await adapter.home();
+        if (batch.partnerBidding === true) {
+          await report({ type: "result", status: "created-unverified", actual: task.actual, reason: "无法按 ID 核验合作平台出价设置，保留已知 ID" });
+          return;
+        }
+        await adapter.home(batch.identity);
         const found = await adapter.lookup(batch.identity, task.name);
         const classification = classifyLookup(found, batch.identity, batch.format, task.name, task.floor, batch.mode ?? task.mode ?? "manual");
         const actual2 = classification.actual;
@@ -2070,9 +2548,22 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       await checkpoint();
       set(journalKey, { assignmentId, taskId: task.id, batchId: batch.id, state: "filling" });
       await report({ type: "stage", stage: "filling" });
-      await adapter.prepare(batch.identity, batch.format, task.name, task.floor, checkpoint, batch.mode ?? task.mode ?? "manual");
+      await adapter.prepare(batch.identity, batch.format, task.name, task.floor, checkpoint, batch.mode ?? task.mode ?? "manual", batch.partnerBidding);
       await report({ type: "stage", stage: "filling", reason: "表单已读回，等待提交许可" });
       await checkpoint();
+      if (job.parallelPreparation) {
+        const batchKey = "batch:" + batch.identity.publisherId + ":" + batch.identity.appId + ":" + batch.id;
+        await waitFor(() => {
+          permission();
+          const current = get(batchKey, void 0);
+          if (!current || current.controllerId !== batch.controllerId || current.id !== batch.id) throw new Error("任务归属已变更，停止等待首条核验");
+          if (current.phase !== "running") throw new Error("批次已暂停或停止，停止等待首条核验");
+          const assigned = current.tasks.find((row) => row.id === task.id && row.assignmentId === assignmentId && row.workerId === workerId);
+          if (!assigned) throw new Error("任务分配已变化，停止等待首条核验");
+          return canSubmitPrepared(current, assigned) ? true : void 0;
+        }, 12e4, batchKey);
+        await checkpoint();
+      }
       await serializeSubmission(batch.identity.publisherId, async (recordClick) => {
         await checkpoint();
         intent = true;
@@ -2084,22 +2575,26 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
           recordClick();
         });
       });
-      await report({ type: "stage", stage: "verifying" });
       if (adapter.waitForUnitId) {
         const createdId = await adapter.waitForUnitId().catch(() => void 0);
         if (createdId) {
-          latestActual = { unitId: createdId, publisherId: batch.identity.publisherId, appId: batch.identity.appId, name: task.name, format: batch.format, mode: batch.mode ?? task.mode ?? "manual", floor: task.floor, currency: (batch.mode ?? task.mode ?? "manual") === "manual" ? "USD" : "", verified: false };
+          if (!knownId(job, { unitId: createdId })) throw new Error("创建说明返回的广告位 ID 与本发布商不符，保留提交意图等待核验");
+          const mode = batch.partnerBidding ? "partner-bidding" : batch.mode ?? task.mode ?? "manual";
+          latestActual = { unitId: createdId, publisherId: batch.identity.publisherId, appId: batch.identity.appId, name: task.name, format: batch.format, mode, partnerBidding: batch.partnerBidding === true, floor: mode === "manual" ? task.floor : "", currency: mode === "manual" ? "USD" : "", verified: false };
+          persistStage(job, { id: uuid(), at: Date.now(), workerId, assignmentId, taskId: task.id, type: "stage", stage: "created", actual: latestActual });
           await report({ type: "stage", stage: "created", actual: latestActual });
         }
       }
-      const actual = await adapter.verify(batch.identity, batch.format, task.name, task.floor, batch.mode ?? task.mode ?? "manual");
+      await report({ type: "stage", stage: "verifying", actual: latestActual });
+      const actual = await adapter.verify(batch.identity, batch.format, task.name, task.floor, batch.mode ?? task.mode ?? "manual", batch.partnerBidding);
+      if (latestActual?.unitId && actual.unitId !== latestActual.unitId) throw Object.assign(new Error("保存后核验返回不同广告位 ID，保留原 ID 等待核验"), { actual: { ...latestActual, verified: false } });
       latestActual = actual;
       await report({ type: "result", status: actual.verified ? "success" : "created-unverified", actual, reason: actual.verified ? "保存后配置核验一致" : "已取得广告位 ID，配置尚未全部核验" });
     } catch (error) {
       const e = error;
       const completed = get(journalKey, void 0);
       if (completed?.state === "done" && completed.report) return;
-      let actual = e.actual || latestActual;
+      let actual = latestActual?.unitId ? e.actual?.unitId && latestActual.unitId !== e.actual.unitId ? { ...latestActual, verified: false } : { ...latestActual, ...e.actual, unitId: latestActual.unitId, verified: false } : e.actual || latestActual;
       if (intent && !actual?.unitId && adapter.recoverCreatedId) {
         try {
           const recovered = adapter.recoverCreatedId(batch.identity, task.name, batch.format);
@@ -2114,22 +2609,85 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
     }
   }
   async function runWorker(workerId, adapter) {
-    await holdLock("admob-batch-worker:" + workerId);
+    const release = await holdLock("admob-batch-worker:" + workerId);
     const cmdKey = "command:" + workerId, outKey = "report:" + workerId;
     const status = document.createElement("div");
     status.id = "abc-worker-status";
     status.style.cssText = "position:fixed;bottom:8px;right:8px;z-index:2147483647;padding:10px;background:#152238;color:white;font:14px sans-serif;max-width:380px";
     status.textContent = "AdMob 批量执行页：等待主控。不要手动修改此页。";
     document.body.append(status);
-    let running = false, seen = "";
+    let running = false, seen = "", closed = false;
     let activeJob;
+    let lastCommand = { seq: 0 };
+    let poll;
     let notificationReceived = false;
-    listen(cmdKey, () => {
-      notificationReceived = true;
-      void tick();
-    });
+    let removeListener = () => {
+    };
+    let activationNonce = "";
+    const visibilityChanged = () => {
+      const command = get(cmdKey, { seq: 0 });
+      if (!closed && !running && activationNonce && command.activate?.nonce === activationNonce) publishActivation(activationNonce);
+    };
+    document.addEventListener?.("visibilitychange", visibilityChanged);
+    try {
+      removeListener = listen(cmdKey, () => {
+        notificationReceived = true;
+        void tick();
+      });
+    } catch {
+    }
+    if (closed) removeListener();
+    function readCommand() {
+      const command = get(cmdKey, { seq: 0 });
+      if (command.close && activeJob && !canCloseActive(command)) {
+        const { close: _close, ...updates } = command;
+        lastCommand = { ...lastCommand, ...updates, job: command.job || lastCommand.job };
+      } else {
+        lastCommand = command;
+        if (command.close) activeJob = void 0;
+      }
+      return lastCommand;
+    }
+    function canCloseActive(command) {
+      if (!activeJob) return true;
+      if (command.job && command.job.assignmentId !== activeJob.assignmentId) return false;
+      const journal = get("journal:" + activeJob.assignmentId, void 0);
+      const terminal = journal?.report;
+      if (!journal || !ownsJournal(activeJob, journal) || journal.state !== "done" || !terminal || !["result", "error"].includes(terminal.type) || terminal.assignmentId !== activeJob.assignmentId || terminal.taskId !== activeJob.task.id || terminal.workerId !== workerId || command.ack !== terminal.id) return false;
+      return knownId(activeJob, terminal.actual) || terminal.status === "failed" && activeJob.kind === "create" && !activeJob.task.intentAt && !activeJob.task.actual?.unitId;
+    }
+    function finishRunning() {
+      running = false;
+      if (!closed) void Promise.resolve().then(tick).catch((e) => {
+        status.textContent = "执行页通信中断：" + e.message + "。保持此页，返回主控恢复核验。";
+      });
+    }
+    function closeDiagnostic(command) {
+      if (closed || activeJob) return;
+      closed = true;
+      removeListener();
+      document.removeEventListener?.("visibilitychange", visibilityChanged);
+      if (poll !== void 0) clearInterval(poll);
+      if (!command.closeAfterReload) release();
+      status.textContent = "AdMob 执行页已安全释放。";
+      try {
+        set(outKey, { id: uuid(), at: Date.now(), workerId, type: "closed", closingSeq: command.seq });
+      } finally {
+        if (typeof window !== "undefined") window.close();
+      }
+    }
+    function publishControl(data) {
+      set(outKey, { ...data, id: uuid(), at: Date.now(), workerId });
+    }
+    function publishActivation(nonce) {
+      publishControl({ type: "active", activation: { nonce, visible: document.visibilityState === "visible" } });
+    }
     async function emit(data) {
       const r = { ...data, id: uuid(), at: Date.now(), workerId };
+      if (data.assignmentId && data.type === "stage") {
+        if (!activeJob || activeJob.assignmentId !== data.assignmentId || activeJob.task.id !== data.taskId) throw new Error("执行进度与当前任务不匹配，已阻止覆盖");
+        persistStage(activeJob, r);
+      }
       if (data.assignmentId && ["result", "error"].includes(data.type)) {
         const prior = get("journal:" + data.assignmentId, void 0);
         const batchId = prior?.batchId || activeJob?.batch.id;
@@ -2138,29 +2696,55 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       }
       set(outKey, r);
       status.textContent = "AdMob 批量执行页：" + (data.reason || data.stage || data.type);
-      await waitFor(() => get(cmdKey, { seq: 0 }).ack === r.id ? true : void 0, 6e4, cmdKey);
+      if (data.type === "stage") return;
+      await waitFor(() => readCommand().ack === r.id ? true : void 0, 6e4, cmdKey);
     }
     async function tick() {
+      if (closed) return;
+      const cmd = readCommand();
+      if (cmd.close) {
+        closeDiagnostic(cmd);
+        return;
+      }
       if (running) return;
-      const cmd = get(cmdKey, { seq: 0 });
+      if (cmd.activate && activationNonce !== cmd.activate.nonce) {
+        activationNonce = cmd.activate.nonce;
+        if (document.visibilityState !== "visible") try {
+          window.focus();
+        } catch {
+        }
+        publishActivation(activationNonce);
+        return;
+      }
       if (cmd.probe && seen !== cmd.probe.nonce) {
         running = true;
         seen = cmd.probe.nonce;
         try {
           let identity, error;
-          try {
-            identity = await adapter.identify();
-          } catch (e) {
-            error = e.message;
+          const expected = cmd.probe.createIdentity;
+          if (expected || cmd.probe.identify !== false) {
+            try {
+              identity = expected && adapter.identifyCreatePage ? await adapter.identifyCreatePage(expected) : await adapter.identify();
+            } catch (e) {
+              error = e.message;
+            }
           }
-          set(outKey, { id: uuid(), at: Date.now(), workerId, type: "hello", probe: { nonce: cmd.probe.nonce, locked: await lockUnavailable(cmd.probe.lockName), identity, error, notifications: notificationReceived } });
+          const locked = await lockUnavailable(cmd.probe.lockName);
+          const latest = get(cmdKey, { seq: 0 });
+          if (latest.close) {
+            closeDiagnostic(latest);
+            return;
+          }
+          if (closed || latest.probe?.nonce !== cmd.probe.nonce) return;
+          set(outKey, { id: uuid(), at: Date.now(), workerId, type: "hello", probe: { nonce: cmd.probe.nonce, locked, identity, error, notifications: notificationReceived } });
         } finally {
-          running = false;
+          finishRunning();
         }
         return;
       }
       if (!cmd.job || seen === cmd.job.assignmentId) return;
       const job = cmd.job;
+      activationNonce = "";
       const batch = get("batch:" + job.batch.identity.publisherId + ":" + job.batch.identity.appId + ":" + job.batch.id, void 0);
       if (!batch || !["running", "paused", "stopping"].includes(batch.phase)) return;
       if (batch.controllerId !== job.batch.controllerId) {
@@ -2174,7 +2758,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         } catch (e) {
           status.textContent = "执行页通信中断：" + e.message + "。保持此页，返回主控恢复核验。";
         } finally {
-          running = false;
+          finishRunning();
         }
         return;
       }
@@ -2183,25 +2767,28 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       activeJob = job;
       try {
         await performJob(job, adapter, emit, (beforeClick) => {
-          const latest = get(cmdKey, { seq: 0 });
+          const latest = readCommand();
           const control = get("batch:" + job.batch.identity.publisherId + ":" + job.batch.identity.appId + ":" + job.batch.id, void 0);
           if (latest.job?.assignmentId !== job.assignmentId || !control || control.controllerId !== job.batch.controllerId) throw Object.assign(new Error("任务归属已变更，停止当前执行"), { fatal: true });
           if (latest.blocked) throw new Error(latest.blocked);
           if (control.phase !== "running") throw new Error(control.phase === "stopping" ? "批次已停止，未发起提交" : "批次已暂停，在提交前安全停止");
+          if (beforeClick && job.requireForeground && document.visibilityState !== "visible") throw new Error("执行页已离开前台，未点击创建");
           const report = get(outKey, void 0);
           if ((beforeClick || report?.type === "intent") && (!latest.grant || latest.grant.assignmentId !== job.assignmentId || latest.grant.expires <= Date.now())) throw new Error("提交许可缺失或过期，未点击创建");
         });
       } catch (e) {
         status.textContent = "执行页通信中断：" + e.message + "。保持此页，返回主控恢复核验。";
       } finally {
-        running = false;
+        finishRunning();
       }
     }
-    setInterval(() => void tick(), 1300);
+    if (!closed) poll = setInterval(() => void tick(), 1300);
     await tick();
   }
 
   // src/controller.ts
+  var WorkerCapabilityUnavailable = class extends Error {
+  };
   var Controller = class {
     adapter;
     id = uuid();
@@ -2219,6 +2806,16 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
     lastIdentityCheck = 0;
     errors = 0;
     localBusy = false;
+    probing = false;
+    reportWork = /* @__PURE__ */ new Map();
+    handledReports = /* @__PURE__ */ new Set();
+    grantTail = Promise.resolve();
+    cleanupWork = /* @__PURE__ */ new Map();
+    identityWork;
+    cleanupError;
+    archives = /* @__PURE__ */ new Map();
+    archiveWork = /* @__PURE__ */ new Map();
+    selectedHistoryId;
     constructor(adapter) {
       this.adapter = adapter;
     }
@@ -2236,8 +2833,11 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         retry: () => this.action(() => this.retry()),
         verify: () => this.action(() => this.verify()),
         recordObservedId: (taskId, unitId) => this.action(() => this.recordObservedId(taskId, unitId)),
+        verifyHistory: (id) => this.action(() => this.verifyHistory(id)),
+        recordHistoryObservedId: (id, taskId, unitId) => this.action(() => this.recordHistoryObservedId(id, taskId, unitId)),
         history: async () => this.refreshHistory(),
         viewHistory: async (id) => {
+          this.selectedHistoryId = id;
           this.panel.update({ historyBatch: id ? this.readHistory(id) : void 0 });
         },
         degrade: async () => {
@@ -2248,6 +2848,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
           this.save();
           this.notice("已降级单页。旧执行页仍保留并继续收集结果；点击继续后，后续任务在当前页处理。");
         },
+        switchToPaged: () => this.action(() => this.switchToPaged()),
         export: async (filter, id) => {
           const batch = id ? this.readHistory(id) : this.batch;
           if (!batch) throw new Error("没有可导出的批次");
@@ -2260,13 +2861,9 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
           this.notice("已复制有真实广告位 ID 的名称与 ID");
         },
         diagnostics: async () => this.diagnostics(),
-        probe: () => this.action(async () => {
-          await this.identify();
-          await this.acquire();
-          await this.probe();
-        })
+        probe: () => this.action(() => this.checkCrossPage(this.panel.getConfig().execution === "paged"))
       });
-      this.panel.update({ capabilities: "支持 1～5 个普通执行页。有已核验的历史样本时直接并发，否则首条核验后继续并发。" });
+      this.panel.update({ capabilities: "并发模式批量打开创建页，逐页核验并关闭。串行模式使用当前页。" });
       try {
         await this.identify();
         await this.load();
@@ -2279,6 +2876,13 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         if (this.batch?.phase === "running") {
           this.batch.phase = "paused";
           this.save();
+        }
+        for (const slot of this.slots.values()) {
+          if (slot.directCreate && slot.tab && !slot.closing && this.safeToClose(slot)) {
+            const command = get("command:" + slot.id, { seq: 0 });
+            set("command:" + slot.id, { ...command, seq: command.seq + 1, close: true });
+            slot.tab.close();
+          }
         }
       });
     }
@@ -2296,9 +2900,44 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
     }
     reportChanged() {
       this.reportTickPending = true;
+      this.collectArchives();
+      this.drainReports();
       if (this.tickBusy || this.actionBusy) return;
       this.reportTickPending = false;
       void this.tick().catch((e) => this.pause("调度异常：" + e.message));
+    }
+    drainReports() {
+      const immediate = [];
+      for (const slot of this.slots.values()) {
+        if (slot.closing) continue;
+        const report = this.savedReport(slot);
+        if (!report || !["stage", "intent", "result", "error"].includes(report.type) || report.id === slot.lastReport || this.handledReports.has(report.id)) continue;
+        const prior = this.reportWork.get(slot.id);
+        if (prior && (prior.report.id === report.id || prior.report.type !== "intent")) {
+          if (prior.report.type !== "intent") immediate.push(prior.promise);
+          continue;
+        }
+        const batch = this.batch;
+        const work = { report, promise: Promise.resolve() };
+        this.reportWork.set(slot.id, work);
+        work.promise = Promise.resolve().then(() => this.handle(slot, report)).catch(async (error) => {
+          if (this.batch === batch) {
+            try {
+              await this.pause("报告处理异常：" + error.message);
+            } catch {
+            }
+          }
+        }).finally(() => {
+          if (this.reportWork.get(slot.id) === work) this.reportWork.delete(slot.id);
+          try {
+            const latest = this.savedReport(slot);
+            if (latest && latest.id !== report.id && !this.handledReports.has(latest.id)) this.reportChanged();
+          } catch {
+          }
+        });
+        if (report.type !== "intent") immediate.push(work.promise);
+      }
+      return immediate;
     }
     addSlot(slot) {
       this.slots.get(slot.id)?.removeReportListener?.();
@@ -2314,7 +2953,13 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       const task = this.batch?.tasks.find((task2) => task2.assignmentId === assignment && task2.workerId === slot.id);
       if (task) {
         const journal = get("journal:" + assignment, void 0);
-        if (journal?.state === "done" && journal.batchId === this.batch.id && journal.taskId === task.id && journal.assignmentId === assignment && journal.report && reportBelongs(journal.report, task, slot.id) && ["result", "error"].includes(journal.report.type)) return journal.report;
+        if (journal && journal.batchId === this.batch.id && journal.taskId === task.id && journal.assignmentId === assignment && journal.report && reportBelongs(journal.report, task, slot.id) && ["stage", "result", "error"].includes(journal.report.type)) {
+          if (journal.state === "done" && ["result", "error"].includes(journal.report.type)) return journal.report;
+          const mailbox = get("report:" + slot.id, void 0);
+          if (journal.report.actual?.unitId && !task.actual?.unitId) return journal.report;
+          if (!mailbox || !reportBelongs(mailbox, task, slot.id) || journal.report.at >= mailbox.at) return journal.report;
+          return mailbox;
+        }
       }
       return get("report:" + slot.id, void 0);
     }
@@ -2336,14 +2981,14 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
     refreshHistory() {
       if (!this.identity || typeof GM_listValues !== "function") return;
       const prefix = "abc:v1:batch:" + this.identity.publisherId + ":" + this.identity.appId + ":";
-      const history2 = GM_listValues().filter((key) => key.startsWith(prefix)).flatMap((key) => {
+      const history = GM_listValues().filter((key) => key.startsWith(prefix)).flatMap((key) => {
         try {
           return [summarizeBatch(this.readHistory(key.slice(prefix.length)))];
         } catch {
           return [];
         }
       }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      this.panel.update({ history: history2 });
+      this.panel.update({ history });
     }
     save() {
       if (this.batch) {
@@ -2353,6 +2998,121 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         if (get(latestKey, void 0) !== this.batch.id) set(latestKey, this.batch.id);
         this.panel.update({ batch: this.batch });
       }
+    }
+    saveArchive(batch) {
+      if (this.batch === batch) this.save();
+      else set(this.key(batch), batch);
+      if (this.selectedHistoryId === batch.id) this.panel.update({ historyBatch: batch });
+      this.refreshHistory();
+    }
+    matchingCommand(batch, task) {
+      if (!task.workerId || !task.assignmentId) return void 0;
+      const command = get("command:" + task.workerId, void 0), job = command?.job;
+      return job?.batch.id === batch.id && sameIdentity(job.batch.identity, batch.identity) && job.task.id === task.id && job.workerId === task.workerId && job.assignmentId === task.assignmentId ? command : void 0;
+    }
+    archiveStopped(batch) {
+      batch.phase = "stopping";
+      for (const task of batch.tasks) if (task.status === "pending" && !task.assignmentId) transition(task, "stopped", "用户停止");
+      set(this.key(batch), batch);
+      for (const task of batch.tasks) {
+        const command = this.matchingCommand(batch, task);
+        if (!command) continue;
+        set("command:" + task.workerId, { ...command, seq: command.seq + 1, grant: void 0, blocked: "批次已停止并归档；禁止继续创建或重放原分配" });
+      }
+      for (const task of batch.tasks) if (["pending", "filling", "submitting", "verifying"].includes(task.status)) {
+        if (task.actual?.unitId && ["pending", "filling"].includes(task.status)) transition(task, "uncertain", "已取得真实 ID，转入停止批次历史核验");
+        transition(task, task.actual?.unitId ? "created-unverified" : "uncertain", "批次已停止；原分配与提交证据保留，结果转入历史核验");
+      }
+      batch.phase = "done";
+      batch.completedAt ??= (/* @__PURE__ */ new Date()).toISOString();
+      const archive = this.archives.get(batch.id) || { batch, slots: /* @__PURE__ */ new Map() };
+      archive.batch = batch;
+      this.archives.set(batch.id, archive);
+      if (this.batch === batch) this.grantTail = Promise.resolve();
+      for (const slot of [...this.slots.values()]) {
+        const assignment = slot.busy || get("command:" + slot.id, { seq: 0 }).job?.assignmentId;
+        const task = batch.tasks.find((task2) => task2.workerId === slot.id && task2.assignmentId === assignment);
+        if (!task && slot.batchId !== batch.id) continue;
+        this.removeSlot(slot.id);
+        slot.batchId = batch.id;
+        archive.slots.set(slot.id, slot);
+        if (task) slot.taskId = task.id;
+        if (task && ["success", "exists"].includes(task.status) && task.actual?.unitId) slot.busy = void 0;
+        slot.removeReportListener = listen("report:" + slot.id, () => this.collectArchives());
+      }
+      for (const task of batch.tasks) if (task.workerId && task.assignmentId && !archive.slots.has(task.workerId)) {
+        const slot = { id: task.workerId, busy: task.assignmentId, since: Date.now(), batchId: batch.id, taskId: task.id };
+        archive.slots.set(slot.id, slot);
+        slot.removeReportListener = listen("report:" + slot.id, () => this.collectArchives());
+      }
+      this.saveArchive(batch);
+      const active = get("active:" + batch.identity.publisherId, void 0);
+      if (active?.id === batch.id && active.appId === batch.identity.appId) GM_deleteValue("abc:v1:active:" + batch.identity.publisherId);
+      this.collectArchives();
+      for (const slot of archive.slots.values()) this.cleanupArchivedSlot(batch, slot);
+    }
+    collectArchives() {
+      for (const archive of this.archives.values()) for (const slot of archive.slots.values()) {
+        if (slot.closing || this.archiveWork.has(slot.id)) continue;
+        const task = archive.batch.tasks.find((task2) => task2.workerId === slot.id && task2.id === slot.taskId) || archive.batch.tasks.find((task2) => task2.workerId === slot.id && task2.assignmentId === slot.busy);
+        if (!task) continue;
+        const journal = get("journal:" + task.assignmentId, void 0), mailbox = get("report:" + slot.id, void 0);
+        const durable = journal?.batchId === archive.batch.id && journal.taskId === task.id && journal.assignmentId === task.assignmentId && journal.report && reportBelongs(journal.report, task, slot.id) ? journal.report : void 0;
+        const report = durable && (journal?.state === "done" || !mailbox || !reportBelongs(mailbox, task, slot.id) || durable.at >= mailbox.at) ? durable : mailbox;
+        if (!report || !reportBelongs(report, task, slot.id) || !["stage", "result", "error"].includes(report.type) || slot.lastReport === report.id || this.handledReports.has(report.id)) continue;
+        const work = Promise.resolve().then(() => this.handleArchived(archive.batch, slot, task, report)).catch(() => {
+        }).finally(() => {
+          this.archiveWork.delete(slot.id);
+        });
+        this.archiveWork.set(slot.id, work);
+      }
+    }
+    async handleArchived(batch, slot, task, report) {
+      if (!batch.stopRequestedAt || batch.phase !== "done" || !reportBelongs(report, task, slot.id)) return;
+      const command = this.matchingCommand(batch, task);
+      const mismatch = !!task.actual?.unitId && !!report.actual?.unitId && task.actual.unitId !== report.actual.unitId;
+      if (!["success", "exists"].includes(task.status) && !mismatch && report.actual?.unitId && new RegExp(`^ca-app-${batch.identity.publisherId}/\\d{10}$`).test(report.actual.unitId)) task.actual = { ...task.actual, ...report.actual };
+      const terminal = ["result", "error"].includes(report.type);
+      if (terminal && !["success", "exists"].includes(task.status)) {
+        let status = report.status || "uncertain";
+        if (mismatch) status = "created-unverified";
+        if (task.intentAt && status === "failed") status = task.actual?.unitId ? "created-unverified" : "uncertain";
+        if (status === "success" && (task.actual?.format !== batch.format || !sameIdentity(task.actual, batch.identity) || !matchesRequestedConfiguration(task.actual, task.floor, batch.mode, batch.partnerBidding))) status = "created-unverified";
+        if (["success", "exists"].includes(status) && ["submitting", "uncertain", "created-unverified"].includes(task.status)) transition(task, "verifying", "收集停止批次的迟到核验结果");
+        if (status === "created-unverified" && ["pending", "filling"].includes(task.status)) transition(task, "uncertain", "停止批次取得真实 ID，配置待核验");
+        transition(task, status, mismatch ? "迟到报告 ID 与原 ID 不同，保留原 ID" : report.reason || "收集停止批次的迟到结果");
+      }
+      this.saveArchive(batch);
+      if (terminal && command) {
+        command.grant = void 0;
+        command.ack = report.id;
+        command.seq++;
+        set("command:" + slot.id, command);
+        slot.busy = void 0;
+      }
+      slot.lastReport = report.id;
+      this.handledReports.add(report.id);
+      if (terminal) this.cleanupArchivedSlot(batch, slot);
+    }
+    cleanupArchivedSlot(batch, slot) {
+      if (!slot.tab || slot.busy || slot.closing) return;
+      const command = get("command:" + slot.id, { seq: 0 }), task = batch.tasks.find((task2) => task2.workerId === slot.id && (task2.id === slot.taskId || task2.assignmentId === command.job?.assignmentId));
+      if (task && !task.actual?.unitId && (task.intentAt || command.grant || !["failed", "stopped"].includes(task.status))) return;
+      if (command.job && (!task || command.job.batch.id !== batch.id || !sameIdentity(command.job.batch.identity, batch.identity) || !task.actual?.unitId && (task.intentAt || command.grant || !["failed", "stopped"].includes(task.status)))) return;
+      slot.closing = true;
+      void Promise.resolve().then(async () => {
+        set("command:" + slot.id, { ...command, seq: command.seq + 1, close: true });
+        await this.closeKnownTab(slot);
+        slot.removeReportListener?.();
+        this.archives.get(batch.id)?.slots.delete(slot.id);
+        const latest = get("command:" + slot.id, { seq: 0 });
+        if (!latest.job || latest.job.batch.id === batch.id && latest.job.assignmentId === command.job?.assignmentId) {
+          GM_deleteValue("abc:v1:command:" + slot.id);
+          GM_deleteValue("abc:v1:report:" + slot.id);
+        }
+      }).catch(() => {
+        slot.closing = false;
+      });
     }
     async identify() {
       let identity;
@@ -2394,6 +3154,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       batch.controllerId = this.id;
       if (batch.phase !== "done") batch.phase = batch.stopRequestedAt ? "stopping" : batch.confirmedAt ? "paused" : "draft";
       for (const task of batch.tasks) {
+        if (batch.partnerBidding === true) task.partnerBidding = true;
         const remote = !!task.workerId && !task.workerId.startsWith("single:");
         if (batch.phase !== "done" && batch.execution === "single" && task.status === "uncertain" && !task.intentAt && !task.actual && task.assignmentId && task.workerId?.startsWith("single:") && task.workerId !== "single:" + this.id) {
           const journal2 = get("journal:" + task.assignmentId, void 0);
@@ -2402,13 +3163,18 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
             transition(task, "failed", "旧单页实例已结束，匹配的填表记录无提交意图、结果或许可；确认未提交，可手动重试");
           }
         }
-        if (batch.phase !== "done" && remote && task.status === "filling") transition(task, "uncertain", "主控已刷新，等待原执行页报告");
-        else if (["filling", "submitting", "verifying"].includes(task.status)) recoverTask(task);
+        if (!batch.stopRequestedAt && batch.phase !== "done" && remote && task.status === "filling") transition(task, "uncertain", "主控已刷新，等待原执行页报告");
+        else if (!batch.stopRequestedAt && ["filling", "submitting", "verifying"].includes(task.status)) recoverTask(task);
         const journal = task.assignmentId ? get("journal:" + task.assignmentId, void 0) : void 0;
         const completed = journal?.state === "done" && journal.batchId === batch.id && journal.taskId === task.id && journal.assignmentId === task.assignmentId && !!journal.report && reportBelongs(journal.report, task, task.workerId || "") && ["result", "error"].includes(journal.report.type);
         if (batch.phase !== "done" && task.assignmentId && task.workerId && !["success", "exists", "stopped", "conflict"].includes(task.status) && (remote || completed)) {
           this.addSlot({ id: task.workerId, busy: task.assignmentId, since: Date.now() });
         }
+      }
+      if (batch.stopRequestedAt) {
+        this.archiveStopped(batch);
+        this.notice("已恢复已停止批次；未决结果及已知 ID 保留在历史中，可填写新清单。");
+        return;
       }
       this.save();
       for (const slot of this.slots.values()) {
@@ -2418,20 +3184,220 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       this.notice(batch.phase === "draft" ? "已恢复未确认草稿。检查清单后点击开始创建，将自动检查执行条件。" : batch.phase === "done" ? "已恢复已结束批次，可查看历史结果或填写新清单。" : "已恢复历史批次并暂停。提交过或结果不确定的任务只允许先核验；点击继续才会派发尚未提交的任务。");
     }
     signature(config) {
-      return JSON.stringify([config.format, config.mode ?? "manual", config.concurrency, config.execution, config.rows, this.identity?.publisherId, this.identity?.appId]);
+      return JSON.stringify([config.format, config.partnerBidding ? "disabled" : config.mode ?? "manual", config.partnerBidding ?? false, config.concurrency, config.execution, config.rows, this.identity?.publisherId, this.identity?.appId]);
     }
     checkConfirmedIdentity(config) {
       if (!config.confirmedIdentity || !this.identity || !sameIdentity(config.confirmedIdentity, this.identity)) {
         this.preflightSignature = "";
         this.panel.update({ ready: false });
-        throw new Error("当前账号或应用与整批确认不一致，请核对当前页面并重新勾选确认后开始");
+        throw new Error("当前账号或应用与已确认的预览不一致，请核对当前页面并重新确认创建预览");
       }
     }
+    workerUrl(identity, id, destination) {
+      const url = new URL(typeof location === "undefined" ? this.batch.sourceUrl : location.href);
+      url.pathname = "/v2/apps/" + identity.appId.split("~")[1] + "/adunits/" + destination;
+      url.search = "";
+      url.hash = "";
+      url.searchParams.set("__admob_batch_worker", id);
+      return url.href;
+    }
+    waitForProbe(slot, nonce, timeout = 25e3) {
+      return waitFor(() => {
+        const reply = get("report:" + slot.id, void 0);
+        return reply?.workerId === slot.id && reply.type === "hello" && reply.probe?.nonce === nonce ? reply : void 0;
+      }, timeout, "report:" + slot.id);
+    }
+    async openCreatePages(identity, taskIds, batch) {
+      if (!taskIds.length) return [];
+      const phase = batch?.phase;
+      const nonce = uuid(), lockName = "admob-batch-probe:" + nonce;
+      const release = await holdLock(lockName);
+      const slots = [];
+      const checkBatch = () => {
+        if (batch && (this.batch !== batch || batch.phase !== phase || batch.stopRequestedAt)) throw new Error("批次已变化，停止打开创建页");
+      };
+      try {
+        if (typeof document !== "undefined" && document.getElementById("abc-panel-host")?.hasAttribute("data-manual-tabs")) throw new WorkerCapabilityUnavailable("当前环境无法自动打开创建页");
+        this.notice(`正在批量打开 ${taskIds.length} 个广告单元创建页…`);
+        for (const taskId of [...taskIds].reverse()) {
+          checkBatch();
+          const slot = { id: uuid(), since: Date.now(), identity, batchId: batch?.id, taskId, directCreate: true };
+          slots.push(slot);
+          set("command:" + slot.id, { seq: 1, probe: { nonce, lockName, identify: false } });
+          slot.tab = GM_openInTab(this.workerUrl(identity, slot.id, "create"), { active: true, insert: true, setParent: true });
+          if (!slot.tab || typeof slot.tab.focus !== "function") throw new WorkerCapabilityUnavailable("浏览器无法切换到批量打开的创建页");
+          this.addSlot(slot);
+        }
+        const replies = await Promise.allSettled(slots.map((slot) => this.waitForProbe(slot, nonce, 5e3)));
+        for (const [index, reply] of replies.entries()) {
+          checkBatch();
+          const slot = slots[index];
+          let hello = reply.status === "fulfilled" ? reply.value : get("report:" + slot.id, void 0);
+          if (hello?.workerId !== slot.id || hello.type !== "hello" || hello.probe?.nonce !== nonce) {
+            slot.tab.focus();
+            hello = await this.waitForProbe(slot, nonce, 2e4).catch(() => {
+              throw new WorkerCapabilityUnavailable("创建页启动超时，未提交广告位");
+            });
+          }
+          if (!hello.probe?.locked) throw new WorkerCapabilityUnavailable("创建页跨页锁检查未通过");
+          slot.lastReport = hello.id;
+          slot.probePassed = true;
+        }
+        checkBatch();
+        return slots.reverse();
+      } catch (error) {
+        await Promise.allSettled(slots.map((slot) => this.closeProbe(slot)));
+        throw error;
+      } finally {
+        release();
+      }
+    }
+    async warmPaged() {
+      const batch = this.batch;
+      const opened = new Set([...this.slots.values()].filter((slot) => slot.batchId === batch.id && slot.probePassed && !slot.closing && !slot.tab?.closed).map((slot) => slot.taskId));
+      const tasks = batch.tasks.filter((task) => task.status === "pending" && !task.assignmentId && !task.intentAt && !task.actual?.unitId && !opened.has(task.id));
+      await this.openCreatePages(batch.identity, tasks.map((task) => task.id), batch);
+    }
+    async activatePagedSlot(slot) {
+      if (!slot.tab || typeof slot.tab.focus !== "function" || slot.tab.closed) throw new Error("创建页缺少可用的前台切换句柄，未提交任务");
+      const nonce = uuid(), command = get("command:" + slot.id, { seq: 0 });
+      set("command:" + slot.id, { ...command, seq: command.seq + 1, activate: { nonce } });
+      slot.tab.focus();
+      const report = await waitFor(() => {
+        const value = get("report:" + slot.id, void 0);
+        return value?.workerId === slot.id && value.type === "active" && value.activation?.nonce === nonce && value.activation.visible ? value : void 0;
+      }, 1e4, "report:" + slot.id);
+      if (report.activation?.error) throw new Error("执行页前台切换失败：" + report.activation.error);
+      if (slot.directCreate && slot.identity) {
+        const challenge = uuid(), lockName = "admob-batch-probe:" + challenge;
+        const release = await holdLock(lockName);
+        try {
+          set("command:" + slot.id, { seq: command.seq + 2, probe: { nonce: challenge, lockName, createIdentity: slot.identity } });
+          const reply = await this.waitForProbe(slot, challenge);
+          if (reply.probe?.error) throw new Error("创建页检查失败：" + reply.probe.error);
+          if (!reply.probe?.locked || !reply.probe.notifications || !reply.probe.identity || !sameIdentity(reply.probe.identity, slot.identity)) throw new Error("创建页的账号、应用或跨页通信检查未通过");
+          slot.lastReport = reply.id;
+        } finally {
+          release();
+        }
+      }
+    }
+    safeToClose(slot) {
+      if (slot.busy || slot.id.startsWith("single:")) return false;
+      const command = get("command:" + slot.id, { seq: 0 });
+      if (!command.job) return true;
+      const job = command.job, batch = get("batch:" + job.batch.identity.publisherId + ":" + job.batch.identity.appId + ":" + job.batch.id, void 0);
+      const task = batch?.tasks.find((row) => row.id === job.task.id && row.assignmentId === job.assignmentId && row.workerId === slot.id);
+      if (!task) return false;
+      if (task.actual?.unitId) return true;
+      if (task.intentAt || command.grant || !["failed", "stopped"].includes(task.status)) return false;
+      const journal = get("journal:" + job.assignmentId, void 0);
+      return !!command.blocked || !!(journal?.state === "done" && journal.batchId === batch.id && journal.taskId === task.id && journal.assignmentId === job.assignmentId && journal.report && reportBelongs(journal.report, task, slot.id) && journal.report.type === "error" && !journal.report.actual?.unitId);
+    }
+    async closeKnownTab(slot) {
+      if (!slot.tab) throw new Error("无法确认执行页的自有关闭句柄，保留该页及任务记录");
+      const tab = slot.tab, previous = tab.onclose;
+      await new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (error) => {
+          if (settled) return;
+          settled = true;
+          clearInterval(poll);
+          clearTimeout(timer);
+          tab.onclose = previous;
+          error ? reject(error) : resolve();
+        };
+        const check = () => {
+          if (tab.closed) finish();
+        };
+        const poll = setInterval(check, 250), timer = setTimeout(() => {
+          if (tab.closed) finish();
+          else finish(new Error("执行页尚未确认关闭，已停止开启下一页"));
+        }, 1e4);
+        tab.onclose = () => {
+          try {
+            previous?.();
+          } finally {
+            check();
+          }
+        };
+        try {
+          tab.close();
+          check();
+        } catch (error) {
+          finish(error);
+        }
+      });
+    }
+    scheduleCleanup(slot) {
+      if (this.cleanupError || slot.closing || this.cleanupWork.has(slot.id) || !this.safeToClose(slot)) return;
+      const batch = this.batch;
+      slot.closing = true;
+      const work = Promise.resolve().then(async () => {
+        const command = get("command:" + slot.id, { seq: 0 });
+        if (slot.tab) {
+          set("command:" + slot.id, { ...command, seq: command.seq + 1, close: true });
+          await this.closeKnownTab(slot);
+        } else {
+          const seq = command.closeAfterReload ? command.seq : command.seq + 1;
+          if (!command.closeAfterReload) set("command:" + slot.id, { ...command, seq, close: true, closeAfterReload: true });
+          await waitFor(() => {
+            const report = get("report:" + slot.id, void 0);
+            return report?.workerId === slot.id && report.type === "closed" && report.closingSeq === seq ? report : void 0;
+          }, 1e4, "report:" + slot.id);
+          await navigator.locks.request("admob-batch-worker:" + slot.id, { signal: AbortSignal.timeout(1e4) }, () => {
+          });
+        }
+        this.removeSlot(slot.id);
+        GM_deleteValue("abc:v1:command:" + slot.id);
+        GM_deleteValue("abc:v1:report:" + slot.id);
+      }).catch(async (error) => {
+        slot.closing = false;
+        this.cleanupError = error;
+        if (this.batch === batch) {
+          try {
+            await this.pause("执行页清理未完成：" + error.message);
+          } catch {
+          }
+        }
+      }).finally(() => {
+        this.cleanupWork.delete(slot.id);
+        this.reportChanged();
+      });
+      this.cleanupWork.set(slot.id, work);
+    }
+    cleanupIdlePages() {
+      for (const slot of [...this.slots.values()].reverse()) {
+        if (!slot.busy && !slot.id.startsWith("single:") && (slot.tab || this.batch?.execution === "paged" && get("command:" + slot.id, { seq: 0 }).job)) {
+          this.scheduleCleanup(slot);
+        }
+      }
+    }
+    async switchToPaged() {
+      this.requireBatch();
+      await this.identify();
+      await this.acquire();
+      if (this.batch.phase !== "paused" || this.localBusy || [...this.slots.values()].some((slot) => !!slot.busy) || this.batch.tasks.some((task) => needsVerification(task) && !["success", "exists"].includes(task.status))) throw new Error("请先收齐并核验已有提交结果，再切换逐页创建；原任务不会重新创建。");
+      this.cleanupIdlePages();
+      await Promise.all(this.cleanupWork.values());
+      if (this.cleanupError) throw this.cleanupError;
+      this.batch.execution = "paged";
+      this.batch.concurrency = 1;
+      this.preflightSignature = "";
+      this.save();
+      this.notice("已改为并发；继续后批量打开创建页，再逐页创建、核验并关闭。");
+    }
     async warmPool(target) {
+      const existing = new Set(this.slots.keys());
       const ready = [...this.slots.values()].filter((slot) => !slot.busy && slot.probePassed && !slot.tab?.closed && slot.batchId === this.batch?.id && slot.identity && this.identity && sameIdentity(slot.identity, this.identity)).length;
-      for (let index = ready; index < target; index++) {
-        this.notice(`正在预热执行页 ${index + 1}/${target}：检查跨页锁、通知及账号（不提交）…`);
-        await this.probe(true);
+      try {
+        for (let index = ready; index < target; index++) {
+          this.notice(`正在预热执行页 ${index + 1}/${target}：检查跨页锁、通知及账号（不提交）…`);
+          await this.probe(true, false, `预热执行页 ${index + 1}/${target}`);
+        }
+      } catch (error) {
+        for (const slot of [...this.slots.values()]) if (!existing.has(slot.id) && !slot.busy) await this.closeProbe(slot);
+        throw error;
       }
     }
     async preflight(config) {
@@ -2443,23 +3409,25 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
           const pending2 = this.batch.tasks.filter((task) => task.status === "pending" && !task.assignmentId).length;
           await this.warmPool(Math.min(this.batch.concurrency, pending2));
         }
+        if (!unresolved && this.batch.execution === "paged") await this.warmPaged();
         this.panel.update({ ready: false, checks: [
           { label: "已重新核对批次原发布商和应用，主控锁有效", ok: true },
           { label: "保留原清单、已知 ID、提交意图和执行归属；本次不提交", ok: true },
           { label: unresolved ? `${unresolved} 条提交结果或配置待核验，请先点击“核验结果不确定项”` : "没有待核验的提交结果", ok: unresolved === 0 },
-          { label: this.batch.mode === "manual" ? "底价按已确定的逐行金额与整批 USD 使用，无需单独确认" : "按批次已确定的底价模式创建，无需填写金额", ok: true }
+          { label: this.batch.partnerBidding ? "按批次合作平台出价设置创建并核验，无需填写底价" : this.batch.mode === "manual" ? "底价按已确定的逐行金额与整批 USD 使用，无需单独确认" : "按批次已确定的底价模式创建，无需填写金额", ok: true }
         ] });
         this.notice("暂停批次检查完成。" + (unresolved ? "请先核验已有提交，核验通过后再继续。" : "点击继续执行尚未提交的任务，按批次底价模式保存并核验。"));
         return;
       }
       if (this.batch && this.batch.phase !== "done" && this.batch.phase !== "draft") throw new Error("请先处理当前批次；不能覆盖未完成批次");
       if (!config.rows.length || config.rows.some((r) => r.errors.length)) throw new Error("请先修正创建清单中的全部行级错误");
+      const requestedMode = config.partnerBidding ? "disabled" : config.mode ?? "manual";
       this.preflightSignature = "";
       this.panel.update({ ready: false });
-      for (const [id, slot] of this.slots) if (!slot.busy) {
-        this.removeSlot(id);
-        slot.tab?.close();
-      }
+      this.cleanupIdlePages();
+      await Promise.all(this.cleanupWork.values());
+      if (this.cleanupError) throw this.cleanupError;
+      for (const [id, slot] of this.slots) if (!slot.busy && !slot.tab) this.removeSlot(id);
       this.notice("预检：确认当前账号、主控锁和输入…");
       await this.identify();
       if (config.confirmedIdentity) this.checkConfirmedIdentity(config);
@@ -2467,20 +3435,21 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       const active = get("active:" + this.identity.publisherId, void 0);
       if (active && active.id !== this.batch?.id) {
         const old = get("batch:" + this.identity.publisherId + ":" + active.appId + ":" + active.id, void 0);
-        if (old && old.phase !== "done") throw new Error("此发布商还有未完成批次，请进入原应用恢复：" + active.appId);
+        if (old?.stopRequestedAt) this.archiveStopped(old);
+        else if (old && old.phase !== "done") throw new Error("此发布商还有未完成批次，请进入原应用恢复：" + active.appId);
       }
       let canaryEvidence;
       const previous = this.batch;
-      if (config.execution === "tabs" && previous?.phase === "done" && sameIdentity(previous.identity, this.identity) && previous.format === config.format && previous.mode === (config.mode ?? "manual") && this.adapter.verifyById) {
-        const sample = previous.tasks.find((task) => task.status === "success" && task.actual?.verified === true && sameIdentity(task.actual, this.identity) && task.actual.format === config.format && task.actual.name === task.name && matchesFloor(task.actual, task.floor, previous.mode) && new RegExp(`^ca-app-${this.identity.publisherId}/\\d{10}$`).test(task.actual.unitId || ""));
+      if (config.execution === "tabs" && previous?.phase === "done" && sameIdentity(previous.identity, this.identity) && previous.format === config.format && previous.mode === requestedMode && (previous.partnerBidding ?? false) === (config.partnerBidding ?? false) && this.adapter.verifyById) {
+        const sample = previous.tasks.find((task) => task.status === "success" && task.actual?.verified === true && sameIdentity(task.actual, this.identity) && task.actual.format === config.format && task.actual.name === task.name && matchesRequestedConfiguration(task.actual, task.floor, previous.mode, previous.partnerBidding) && new RegExp(`^ca-app-${this.identity.publisherId}/\\d{10}$`).test(task.actual.unitId || ""));
         if (sample) {
           this.notice("预检：按 ID 只读复核历史成功样本，确认后让新清单直接并发…");
           try {
-            const actual = await this.adapter.verifyById(this.identity, sample.actual.unitId, sample.name, config.format, sample.floor, previous.mode);
-            if (!actual.verified || !sameIdentity(actual, this.identity) || actual.unitId !== sample.actual.unitId || actual.name !== sample.name || actual.format !== config.format || !matchesFloor(actual, sample.floor, previous.mode)) throw new Error("历史样本配置已变化");
+            const actual = await this.adapter.verifyById(this.identity, sample.actual.unitId, sample.name, config.format, sample.floor, previous.mode, previous.partnerBidding);
+            if (!actual.verified || !sameIdentity(actual, this.identity) || actual.unitId !== sample.actual.unitId || actual.name !== sample.name || actual.format !== config.format || !matchesRequestedConfiguration(actual, sample.floor, previous.mode, previous.partnerBidding)) throw new Error("历史样本配置已变化");
             canaryEvidence = { sourceBatchId: previous.id, unitId: actual.unitId, verifiedAt: (/* @__PURE__ */ new Date()).toISOString() };
           } catch {
-            await this.adapter.home();
+            await this.adapter.home(previous.identity);
             await this.identify();
             await this.acquire();
             if (!sameIdentity(previous.identity, this.identity)) throw new Error("历史样本检查期间账号或应用发生变化，已停止");
@@ -2488,7 +3457,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
           }
         }
       }
-      const batch = createBatch(config.rows, this.identity, config.format, config.concurrency, config.execution, location.href, this.id, config.mode ?? "manual");
+      const batch = createBatch(config.rows, this.identity, config.format, config.concurrency, config.execution, location.href, this.id, requestedMode, config.partnerBidding ?? false);
       if (canaryEvidence) {
         batch.canaryPassed = true;
         batch.canaryEvidence = canaryEvidence;
@@ -2501,53 +3470,169 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       this.refreshHistory();
       if (config.execution === "tabs") {
         await this.warmPool(batch.concurrency);
-      }
+      } else if (config.execution === "paged") await this.warmPaged();
       this.preflightSignature = this.signature(config);
       const pending = batch.tasks.filter((t) => t.status === "pending").length;
       const blocked = batch.tasks.filter((t) => ["uncertain", "conflict"].includes(t.status)).length;
-      this.panel.update({ ready: pending > 0, checks: [{ label: "已固定发布商及应用", ok: true }, { label: "创建清单有效", ok: true }, { label: "AdMob 允许重名；检查不查询同名、不阻止创建", ok: true }, { label: blocked ? `${blocked} 行冲突/待核验，不会提交` : "无冲突或待核验项", ok: blocked === 0 }, { label: batch.mode === "manual" ? "底价按已确定的逐行金额与整批 USD 使用，执行时自动填写和读回" : "按所选底价模式创建，保存后核验模式", ok: true }, { label: canaryEvidence ? "历史成功样本已按 ID 复核，新清单可直接并发；每行仍独立保存后核验" : "本批先核验首条，再扩展并发", ok: true }, { label: config.execution === "tabs" ? `${batch.concurrency} 个执行页已预热，跨页互斥、通知及账号检查均通过` : "单页执行；已取得账号主控锁", ok: true }] });
-      this.notice("执行条件检查通过。待创建 " + pending + " 条；AdMob 允许重名，每行创建后立即记录新 ID，并核验保存后的底价模式及配置。");
+      this.panel.update({ ready: pending > 0, checks: [{ label: "已固定发布商及应用", ok: true }, { label: "创建清单有效", ok: true }, { label: "AdMob 允许重名；检查不查询同名、不阻止创建", ok: true }, { label: blocked ? `${blocked} 行冲突/待核验，不会提交` : "无冲突或待核验项", ok: blocked === 0 }, { label: batch.partnerBidding ? "按合作平台出价设置创建，保存后核验此设置" : batch.mode === "manual" ? "底价按已确定的逐行金额与整批 USD 使用，执行时自动填写和读回" : "按所选底价模式创建，保存后核验模式", ok: true }, { label: canaryEvidence ? "历史成功样本已按 ID 复核，新清单可直接并发；每行仍独立保存后核验" : batch.execution === "tabs" ? "先并行准备表单，首条核验通过后放行其他提交" : "按行创建并核验", ok: true }, { label: batch.execution === "tabs" ? `${batch.concurrency} 个执行页已完成前台启动，跨页互斥、通知及账号检查均通过` : batch.execution === "paged" ? `${pending} 个任务页已预开并通过检查；逐页切到前台，核验并确认关闭后进入下一页` : "单页执行；已取得账号主控锁", ok: true }] });
+      this.notice("执行条件检查通过。待创建 " + pending + " 条；AdMob 允许重名，每行创建后立即记录新 ID，并核验保存后的" + (batch.partnerBidding ? "合作平台出价设置。" : "底价模式及配置。"));
     }
-    async probe(forceNew = false) {
-      if (!this.identity) throw new Error("未识别账号");
-      const reusable = [...this.slots.values()].find((s) => !s.busy && s.probePassed && !s.tab?.closed && s.identity && sameIdentity(s.identity, this.identity) && s.batchId === this.batch?.id);
-      if (reusable && !forceNew) return reusable;
-      const nonce = uuid(), lockName = "admob-batch-probe:" + nonce;
-      const release = await holdLock(lockName);
-      const slot = { id: uuid(), since: Date.now(), identity: this.identity, batchId: this.batch?.id };
+    async checkCrossPage(checkFocus = false) {
+      if (this.batch && ["running", "stopping"].includes(this.batch.phase) || [...this.slots.values()].some((slot) => !!slot.busy)) throw new Error("当前批次仍在执行或收集结果，暂不进行独立跨页检查；不会中断已有任务。");
+      const hadLock = !!this.lockRelease;
+      this.notice("跨页检查 1/3：正在识别当前账号和应用（不创建广告位）…");
       try {
-        this.addSlot(slot);
-        const url = new URL(this.batch?.sourceUrl || location.href);
-        url.searchParams.set("__admob_batch_worker", slot.id);
-        set("command:" + slot.id, { seq: 1, probe: { nonce, lockName } });
-        this.panel.update({ workerUrl: url.href });
-        try {
-          if (typeof document === "undefined" || !document.getElementById("abc-panel-host")?.hasAttribute("data-manual-tabs")) slot.tab = GM_openInTab(url.href, { active: false, insert: true, setParent: true });
-        } catch {
-          this.notice("自动打开执行页未完成，请点击“打开执行页”；连接后继续检测，不会提交广告位。");
-        }
-        await waitFor(() => {
-          const r = get("report:" + slot.id, void 0);
-          return r?.probe?.nonce === nonce ? r : void 0;
-        }, 25e3, "report:" + slot.id);
-        const challenge = uuid();
-        set("command:" + slot.id, { seq: 2, probe: { nonce: challenge, lockName } });
-        const report = await waitFor(() => {
-          const r = get("report:" + slot.id, void 0);
-          return r?.probe?.nonce === challenge ? r : void 0;
-        }, 15e3, "report:" + slot.id);
-        if (!report.probe?.locked || !report.probe.notifications || !report.probe.identity || !sameIdentity(report.probe.identity, this.identity)) throw new Error(report.probe?.error || "跨页锁作用域、GM通知或登录账号检查未通过；请改为单页模式。");
-        slot.probePassed = true;
-        slot.lastReport = report.id;
-        this.notice("当前会话跨页能力检查通过；尚未创建任何广告位。");
-        return slot;
+        const identity = await this.adapter.identify();
+        if (this.batch && this.batch.phase !== "done" && !sameIdentity(identity, this.batch.identity)) throw new Error("当前应用与未结束批次不一致；请回到原应用后检查，原批次保持不变。");
+        this.identity = identity;
+        this.panel.update({ identity, identityError: "" });
+        this.notice("跨页检查 1/3：正在检查主控锁和 GM 存取…");
+        await this.acquire();
+        if (checkFocus) {
+          const probes = await this.openCreatePages(identity, [void 0, void 0]);
+          try {
+            for (const slot of probes) await this.activatePagedSlot(slot);
+          } finally {
+            const closed = [];
+            for (const slot of probes.reverse()) closed.push(await this.closeProbe(slot));
+            if (closed.includes(false)) throw new Error("部分诊断执行页尚未确认关闭");
+          }
+          this.notice("跨页检查通过：已批量打开两个创建页，均完成前台核对和关闭。");
+        } else await this.probe(true, true, "跨页检查");
       } catch (error) {
-        this.removeSlot(slot.id);
-        slot.tab?.close();
+        this.notice("跨页检查失败：" + error.message);
         throw error;
       } finally {
-        release();
-        this.panel.update({ workerUrl: "" });
+        if (!hadLock && this.lockRelease) {
+          this.lockRelease();
+          this.lockRelease = void 0;
+          this.lockedPublisher = "";
+        }
+      }
+    }
+    async closeProbe(slot) {
+      if (slot.busy) return false;
+      let mayClean = false;
+      try {
+        const command = get("command:" + slot.id, { seq: 0 });
+        if (command.job) return false;
+        set("command:" + slot.id, { seq: command.seq + 1, close: true });
+        const disconnected = slot.lastReport ? await waitFor(() => get("report:" + slot.id, void 0)?.type === "closed" ? true : void 0, 1500, "report:" + slot.id).catch(() => false) : false;
+        if (slot.tab) {
+          await this.closeKnownTab(slot);
+          mayClean = true;
+          return true;
+        }
+        mayClean = disconnected;
+        return disconnected;
+      } catch {
+        try {
+          if (slot.tab) {
+            await this.closeKnownTab(slot);
+            mayClean = true;
+            return true;
+          }
+        } catch {
+        }
+        if (slot.tab && !slot.tab.closed) {
+          this.cleanupError = new Error("执行页未确认关闭，保留其归属并停止后续开页");
+          if (!this.slots.has(slot.id)) this.addSlot(slot);
+        }
+        return false;
+      } finally {
+        if (mayClean) {
+          try {
+            this.removeSlot(slot.id);
+          } catch {
+            this.slots.delete(slot.id);
+          }
+          for (const key of ["command:", "report:"]) try {
+            GM_deleteValue("abc:v1:" + key + slot.id);
+          } catch {
+          }
+        }
+      }
+    }
+    async probe(forceNew = false, diagnostic = false, label = "执行页连接", taskId) {
+      if (!this.identity) throw new Error("未识别账号");
+      const reusable = [...this.slots.values()].find((s) => !s.busy && s.probePassed && !s.tab?.closed && s.identity && sameIdentity(s.identity, this.identity) && s.batchId === this.batch?.id);
+      if (reusable && !forceNew && !diagnostic) return reusable;
+      if (this.probing) throw new Error("执行页连接检查仍在进行，请等待本次结果。");
+      this.probing = true;
+      const identity = structuredClone(this.identity);
+      const nonce = uuid(), lockName = "admob-batch-probe:" + nonce;
+      let release = () => {
+      }, started = false, passed = false, stage = "启动";
+      const slot = { id: uuid(), since: Date.now(), identity, batchId: diagnostic ? void 0 : this.batch?.id, taskId };
+      try {
+        release = await holdLock(lockName);
+        if (!diagnostic) this.addSlot(slot);
+        const url = this.workerUrl(identity, slot.id, "list");
+        started = true;
+        set("command:" + slot.id, { seq: 1, probe: { nonce, lockName, identify: false } });
+        const startupTimeout = 25e3;
+        this.panel.update({ workerUrl: diagnostic ? url : "" });
+        let automatic = true;
+        this.notice(diagnostic ? `${label} 2/3：已请求前台打开执行页，等待启动回应。也可点击“打开执行页”手动连接（不提交）…` : `${label} 2/3：正在前台打开执行页并自动检查。保持所选并行模式；当前不提交广告位。`);
+        try {
+          if (typeof document !== "undefined" && document.getElementById("abc-panel-host")?.hasAttribute("data-manual-tabs")) automatic = false;
+          else slot.tab = GM_openInTab(url, { active: true, insert: true, setParent: true });
+        } catch {
+          automatic = false;
+        }
+        if (!automatic) {
+          if (!diagnostic) throw new WorkerCapabilityUnavailable("并行启动失败：当前环境未能自动打开执行页，已保留并行配置且未提交。可选择串行模式后重新确认。");
+          this.notice(`${label} 2/3：自动打开不可用，请点击“打开执行页”；连接后继续检查，25 秒内等待手动连接，不提交广告位。`);
+        }
+        const openedAt = Date.now();
+        let remaining = -1;
+        const first = await waitFor(() => {
+          const r = get("report:" + slot.id, void 0);
+          if (r?.workerId === slot.id && r.type === "hello" && r.probe?.nonce === nonce) return r;
+          const elapsed = Date.now() - openedAt, seconds = Math.max(0, Math.ceil((startupTimeout - elapsed) / 1e3));
+          if (elapsed >= 3e3 && seconds !== remaining) {
+            remaining = seconds;
+            this.notice(diagnostic ? `${label} 2/3：${automatic ? "自动打开尚未收到执行页回应" : "等待手动打开执行页"}。请点击“打开执行页”，保持新页加载；还可等待 ${seconds} 秒。当前未提交广告位。` : `${label} 2/3：前台执行页尚未回应，还可等待 ${seconds} 秒；未派发创建任务，保持并行配置。`);
+          }
+          return void 0;
+        }, startupTimeout, "report:" + slot.id);
+        slot.lastReport = first.id;
+        if (first.probe?.error) throw /超时|timeout/i.test(first.probe.error) ? new WorkerCapabilityUnavailable("执行页账号识别超时：" + first.probe.error) : new Error("执行页已连接，但账号识别失败：" + first.probe.error);
+        stage = "通知及身份";
+        this.notice(`${label} 3/3：执行页已回应，正在检查跨页锁、GM 通知和同一账号/应用（不提交）…`);
+        const challenge = uuid();
+        set("command:" + slot.id, { seq: 2, probe: { nonce: challenge, lockName, identify: true } });
+        const report = await this.waitForProbe(slot, challenge);
+        if (report.probe?.identity && !sameIdentity(report.probe.identity, identity) || !this.identity || !sameIdentity(this.identity, identity)) throw new Error("执行页账号或应用检查失败：与本次主控身份不一致，未派发任何新任务。");
+        if (report.probe?.error) throw /超时|timeout/i.test(report.probe.error) ? new WorkerCapabilityUnavailable("执行页账号识别超时：" + report.probe.error) : new Error("执行页账号识别失败：" + report.probe.error);
+        if (!report.probe?.locked) throw new WorkerCapabilityUnavailable("跨页锁能力检查未通过");
+        if (!report.probe.notifications) throw new WorkerCapabilityUnavailable("GM 通知能力检查未通过");
+        if (!report.probe.identity) throw new WorkerCapabilityUnavailable("执行页未完成账号身份读取");
+        slot.probePassed = true;
+        slot.lastReport = report.id;
+        passed = true;
+        this.notice(diagnostic ? "跨页检查通过：执行页连接、跨页锁、GM 通知和账号均正常；未创建广告位，正在清理诊断页。" : `${label}通过：连接、跨页锁、GM 通知和账号均正常；尚未提交广告位。`);
+        return slot;
+      } catch (error) {
+        const message = error.message;
+        const timedOut = message.includes("跨页通信等待超时");
+        const detail = timedOut ? stage === "启动" ? diagnostic ? "执行页启动超时：25 秒内未收到新页回应。自动开页未建立连接；可重新检查并在等待期间点击“打开执行页”，或改为单页模式。" : "并行启动超时：前台开页后 25 秒内未收到执行页回应；已保留并行配置，未提交广告位。可选择串行模式后重新确认。" : "通知及账号检查超时：执行页已启动，但 25 秒内未完成 GM 通知和身份回读" : message;
+        this.notice(`${label}失败：${detail}`);
+        throw timedOut || error instanceof WorkerCapabilityUnavailable ? new WorkerCapabilityUnavailable(detail) : new Error(detail);
+      } finally {
+        let disconnected = false;
+        try {
+          if (started && (diagnostic || !passed)) disconnected = await this.closeProbe(slot);
+          else if (!passed) this.removeSlot(slot.id);
+        } finally {
+          this.probing = false;
+          try {
+            release();
+          } finally {
+            this.panel.update({ workerUrl: "" });
+          }
+        }
+        if (diagnostic && passed) this.notice("跨页检查通过：执行页连接、跨页锁、GM 通知和账号均正常；未创建广告位。" + (disconnected ? "诊断连接已释放。" : "已请求关闭诊断页；如页面仍打开，可手动关闭。"));
       }
     }
     async start(config) {
@@ -2567,7 +3652,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       set("active:" + this.batch.identity.publisherId, { appId: this.batch.identity.appId, id: this.batch.id });
       this.save();
       this.refreshHistory();
-      this.notice(this.batch.canaryEvidence ? "批次已开始。历史成功样本已重新核验，按所选并发派发新清单，每条仍独立核验保存配置。" : "批次已开始。先执行一条并核验，通过后再增加并发。");
+      this.notice(this.batch.execution === "paged" ? "并发批次已开始。创建页已批量打开，插件将逐页核对、创建、核验并关闭。" : this.batch.execution === "single" ? "批次已开始，在当前页逐条创建并核验。" : this.batch.canaryEvidence ? "并行批次已开始。历史成功样本已重新核验，各页准备和核验并发，提交按账号间隔执行。" : "并行批次已开始。各执行页同时准备表单，首条保存后核验通过后自动放行其他提交。");
     }
     async pause(reason) {
       if (this.batch?.phase === "draft") {
@@ -2582,13 +3667,14 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
     }
     async stop() {
       this.requireBatch();
-      this.batch.stopRequestedAt = (/* @__PURE__ */ new Date()).toISOString();
-      this.batch.phase = "stopping";
+      const batch = this.batch;
+      batch.stopRequestedAt ??= (/* @__PURE__ */ new Date()).toISOString();
+      batch.phase = "stopping";
       this.preflightSignature = "";
       this.panel.update({ ready: false });
-      for (const task of this.batch.tasks) if (task.status === "pending" && !task.assignmentId) transition(task, "stopped", "用户停止");
       this.save();
-      this.notice("已停止新建；执行页保持打开，已提交任务继续核验。");
+      this.archiveStopped(batch);
+      this.notice("批次已停止并归档，可填写新清单。未决结果、已知 ID 和原执行页保留，可在历史中只读核验。");
     }
     async resume() {
       this.requireBatch();
@@ -2601,6 +3687,14 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       if (this.batch.phase !== "paused") throw new Error("只有已暂停且已确认的批次可以继续");
       const unresolved = this.batch.tasks.filter((t) => needsVerification(t) && !["success", "exists"].includes(t.status));
       if (unresolved.length) throw new Error(`还有 ${unresolved.length} 条提交结果或配置待核验；请先点击“核验结果不确定项”，核验通过后再继续`);
+      await Promise.all(this.cleanupWork.values());
+      if (this.cleanupError) {
+        this.cleanupError = void 0;
+        this.cleanupIdlePages();
+        await Promise.all(this.cleanupWork.values());
+        if (this.cleanupError) throw this.cleanupError;
+      }
+      if (this.batch.execution === "paged") await this.warmPaged();
       this.batch.phase = "running";
       this.errors = 0;
       this.save();
@@ -2608,6 +3702,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
     }
     async retry() {
       this.requireBatch();
+      if (this.batch.stopRequestedAt) throw new Error("已停止批次仅可在历史中核验或导出；请填写新清单创建新批次");
       if (this.batch.phase === "running") throw new Error("请先暂停后重试明确失败项");
       if ([...this.slots.values()].some((slot) => slot.busy)) throw new Error("旧执行页尚未收齐结果，请先保留原页并完成收集或核验");
       let count = 0;
@@ -2638,6 +3733,79 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       this.save();
       await this.verify();
     }
+    async stoppedHistory(id) {
+      if (this.localBusy || this.batch && ["running", "stopping"].includes(this.batch.phase)) throw new Error("当前批次仍在执行，请暂停并收齐结果后再核验历史");
+      await this.identify();
+      await this.acquire();
+      const stored = this.readHistory(id);
+      if (stored.phase !== "done" || !stored.stopRequestedAt) throw new Error("仅可只读恢复已停止的历史批次");
+      const batch = this.batch?.id === id ? this.batch : this.archives.get(id)?.batch || stored;
+      if (!this.archives.has(id)) {
+        const archive = { batch, slots: /* @__PURE__ */ new Map() };
+        this.archives.set(id, archive);
+        for (const task of batch.tasks) if (task.workerId && task.assignmentId) {
+          const slot = { id: task.workerId, busy: task.assignmentId, since: Date.now(), batchId: id, taskId: task.id };
+          archive.slots.set(slot.id, slot);
+          slot.removeReportListener = listen("report:" + slot.id, () => this.collectArchives());
+        }
+      }
+      this.collectArchives();
+      await Promise.all(this.archiveWork.values());
+      return batch;
+    }
+    async recordHistoryObservedId(id, taskId, unitId) {
+      const batch = await this.stoppedHistory(id), task = batch.tasks.find((task2) => task2.id === taskId), observed = unitId.trim();
+      if (!task || !task.intentAt || !needsVerification(task) || ["success", "exists"].includes(task.status)) throw new Error("只有已有提交意图且结果待核验的历史任务可录入 ID");
+      if (!/^ca-app-pub-\d{16}\/\d{10}$/.test(observed) || !observed.startsWith(`ca-app-${batch.identity.publisherId}/`)) throw new Error("广告位 ID 格式无效或与历史批次发布商不匹配");
+      if (task.actual?.unitId && task.actual.unitId !== observed) throw new Error("已知广告位 ID 与录入值不同；保留原 ID，禁止覆盖");
+      task.actual = { ...task.actual, unitId: observed, publisherId: batch.identity.publisherId, appId: batch.identity.appId, verified: false };
+      transition(task, "created-unverified", "已记录历史任务观察到的广告位 ID，等待只读核验");
+      this.saveArchive(batch);
+      await this.verifyStoppedHistory(batch);
+    }
+    async verifyHistory(id) {
+      await this.verifyStoppedHistory(await this.stoppedHistory(id));
+    }
+    async verifyStoppedHistory(batch) {
+      if (this.localBusy) throw new Error("当前页面仍在收集执行结果，请稍后核验历史");
+      this.localBusy = true;
+      try {
+        for (const task of batch.tasks.filter((task2) => needsVerification(task2) && !["success", "exists"].includes(task2.status))) {
+          const knownId2 = task.actual?.unitId;
+          if (!knownId2) {
+            this.saveArchive(batch);
+            continue;
+          }
+          if (!new RegExp(`^ca-app-${batch.identity.publisherId}/\\d{10}$`).test(knownId2)) continue;
+          if (!this.adapter.verifyById) {
+            task.reason = "历史任务需要按已知 ID 核验，当前页面暂不支持；原记录保留";
+            this.saveArchive(batch);
+            continue;
+          }
+          transition(task, "verifying", "只读核验已停止历史批次的真实 ID");
+          try {
+            const actual = await this.adapter.verifyById(batch.identity, knownId2, task.name, batch.format, task.floor, batch.mode, batch.partnerBidding);
+            if (["success", "exists"].includes(task.status)) continue;
+            if (actual.unitId !== knownId2) {
+              transition(task, "created-unverified", "详情返回不同 ID，保留历史原 ID，禁止重新创建");
+            } else {
+              task.actual = actual;
+              const verified = actual.verified && sameIdentity(actual, batch.identity) && actual.format === batch.format && matchesRequestedConfiguration(actual, task.floor, batch.mode, batch.partnerBidding);
+              transition(task, verified ? "success" : "created-unverified", verified ? "历史批次已按真实 ID 核验保存配置" : "历史真实 ID 配置尚未完整核验");
+            }
+          } catch (error) {
+            if (!["success", "exists"].includes(task.status)) transition(task, "created-unverified", "历史只读核验失败：" + error.message + "；保留原 ID，禁止重新创建");
+          }
+          this.saveArchive(batch);
+        }
+        await this.adapter.home(batch.identity);
+        await this.identify();
+        this.notice("历史只读核验结束；已停止批次保持归档，原未决结果及 ID 保留，不会恢复创建。");
+      } finally {
+        this.localBusy = false;
+        this.saveArchive(batch);
+      }
+    }
     async verify() {
       this.requireBatch();
       await this.identify();
@@ -2654,16 +3822,16 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         for (const task of tasks) {
           if (task.status !== "verifying") transition(task, "verifying", "只读核验平台真实结果");
           try {
-            const knownId = task.actual?.unitId;
-            if (knownId && this.adapter.verifyById) {
-              const actual = await this.adapter.verifyById(this.batch.identity, knownId, task.name, this.batch.format, task.floor, this.batch.mode);
-              if (actual.unitId !== knownId) {
+            const knownId2 = task.actual?.unitId;
+            if (knownId2 && this.adapter.verifyById) {
+              const actual = await this.adapter.verifyById(this.batch.identity, knownId2, task.name, this.batch.format, task.floor, this.batch.mode, this.batch.partnerBidding);
+              if (actual.unitId !== knownId2) {
                 transition(task, "created-unverified", "保存详情返回的 ID 与已知 ID 不一致；保留原 ID，禁止重新创建");
                 this.save();
                 continue;
               }
               task.actual = actual;
-              if (actual.verified && sameIdentity(actual, this.batch.identity) && actual.format === this.batch.format) {
+              if (actual.verified && sameIdentity(actual, this.batch.identity) && actual.format === this.batch.format && matchesRequestedConfiguration(actual, task.floor, this.batch.mode, this.batch.partnerBidding)) {
                 transition(task, "success", "已按已知 ID 核验保存配置");
                 this.batch.canaryPassed = true;
                 if (task.workerId) {
@@ -2679,8 +3847,13 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
               this.save();
               continue;
             }
-            if (!knownId) {
+            if (!knownId2) {
               transition(task, "uncertain", "缺少本次创建的广告位 ID，请保留原执行页或录入成功说明中的 ID 后核验");
+              this.save();
+              continue;
+            }
+            if (this.batch.partnerBidding === true) {
+              transition(task, "created-unverified", "无法按 ID 核验合作平台出价设置，保留已知 ID");
               this.save();
               continue;
             }
@@ -2716,7 +3889,7 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
             if (error.fatal) break;
           }
         }
-        await this.adapter.home();
+        await this.adapter.home(this.batch.identity);
         await this.identify();
         const remaining = this.batch.tasks.filter((t) => needsVerification(t) && !["success", "exists"].includes(t.status)).length;
         this.notice(remaining ? `只读核验结束，仍有 ${remaining} 条结果或配置待核验；保留已知 ID，禁止重新创建。` : "只读核验通过。批次保持暂停，点击继续才会执行尚未提交的任务。");
@@ -2727,12 +3900,14 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
     }
     async dispatch(slot, task) {
       const batch = this.batch;
+      if (!batch.tasks.includes(task)) throw new Error("任务不属于当前批次，禁止派发。");
+      if (task.status !== "pending" || task.assignmentId || task.intentAt || task.actual?.unitId) throw new Error("任务已有归属、提交意图或真实 ID，禁止派发新的创建任务。");
       task.workerId = slot.id;
       task.assignmentId = uuid();
       task.attempts++;
       slot.busy = task.assignmentId;
       slot.since = Date.now();
-      const job = { batch: { id: batch.id, identity: structuredClone(batch.identity), format: batch.format, mode: batch.mode, controllerId: batch.controllerId, phase: batch.phase }, task: structuredClone(task), assignmentId: task.assignmentId, workerId: slot.id, kind: "create" };
+      const job = { batch: { id: batch.id, identity: structuredClone(batch.identity), format: batch.format, mode: batch.mode, partnerBidding: batch.partnerBidding, controllerId: batch.controllerId, phase: batch.phase }, task: structuredClone(task), assignmentId: task.assignmentId, workerId: slot.id, kind: "create", parallelPreparation: batch.execution === "tabs" && batch.concurrency > 1, requireForeground: batch.execution === "paged" };
       this.save();
       const priorCommand = get("command:" + slot.id, { seq: 0 });
       set("command:" + slot.id, { seq: priorCommand.seq + 1, job, ack: priorCommand.ack });
@@ -2753,12 +3928,111 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         });
       }
     }
+    intentContext(batch, task, slot, r) {
+      if (this.batch !== batch || !batch.tasks.includes(task) || !reportBelongs(r, task, slot.id)) return void 0;
+      const persisted = get(this.key(batch), void 0), command = get("command:" + slot.id, { seq: 0 });
+      const saved = persisted?.tasks.find((row) => row.id === task.id && row.assignmentId === r.assignmentId && row.workerId === slot.id);
+      if (!persisted || !saved || persisted.controllerId !== this.id || batch.controllerId !== this.id || command.job?.batch.id !== batch.id || command.job.batch.controllerId !== this.id || command.job.assignmentId !== r.assignmentId || command.job.workerId !== slot.id || command.job.task.id !== task.id) return void 0;
+      return { command, persisted, task: saved };
+    }
+    supersededIntent(slot, task, r) {
+      const journal = get("journal:" + r.assignmentId, void 0);
+      if (journal?.state === "done" && journal.report && reportBelongs(journal.report, task, slot.id) && ["result", "error"].includes(journal.report.type)) return true;
+      const current = get("report:" + slot.id, void 0);
+      return !!current && current.id !== r.id && reportBelongs(current, task, slot.id) && current.at >= r.at;
+    }
+    async handleIntent(batch, task, slot, r) {
+      let unlock;
+      const previous = this.grantTail;
+      this.grantTail = new Promise((resolve) => {
+        unlock = resolve;
+      });
+      await previous;
+      try {
+        const reason = () => {
+          const context2 = this.intentContext(batch, task, slot, r);
+          if (!context2) return "任务归属已变化";
+          if (this.supersededIntent(slot, task, r)) return "执行页已报告后续结果";
+          if (!Number.isFinite(r.at) || r.at > Date.now() + 1e3 || Date.now() - r.at > 1e4) return "提交意图已过期，拒绝迟到的提交许可";
+          if (Date.now() - slot.since > 12e4 || !["pending", "filling"].includes(task.status) || !["pending", "filling"].includes(context2.task.status)) return "执行分配已超时或不再等待提交";
+          if (batch.phase !== "running" || context2.persisted.phase !== "running") return "批次已暂停或停止，主控拒绝提交许可";
+          if (task.intentAt || context2.task.intentAt || task.actual?.unitId || context2.task.actual?.unitId || context2.command.grant) return "本分配已有提交意图、许可或真实 ID，禁止重复许可";
+          if (!canSubmitPrepared(context2.persisted, context2.task)) return "首条保存后核验尚未通过，当前任务没有提交许可";
+          return "";
+        };
+        let blocked = reason();
+        if (!blocked) {
+          const last = Math.max(this.lastSubmit, get("lastSubmit:" + batch.identity.publisherId, 0));
+          const delay = Math.max(0, 2500 - (Date.now() - last));
+          if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+          blocked = reason();
+        }
+        if (!blocked) {
+          try {
+            const current = await this.adapter.identify();
+            blocked = reason();
+            if (!blocked && !sameIdentity(current, batch.identity)) {
+              await this.pause("主控账号或应用发生变化");
+              blocked = "主控账号或应用发生变化，拒绝提交许可";
+            }
+          } catch (error) {
+            blocked = reason() || "主控无法确认当前账号：" + error.message;
+            if (this.batch === batch) {
+              await this.pause(blocked);
+            }
+          }
+        }
+        const context = this.intentContext(batch, task, slot, r);
+        if (!context || this.supersededIntent(slot, task, r)) {
+          this.handledReports.add(r.id);
+          return;
+        }
+        const command = context.command;
+        if (command.ack === r.id) {
+          this.handledReports.add(r.id);
+          slot.lastReport = r.id;
+          return;
+        }
+        blocked = blocked || reason();
+        if (blocked) command.blocked = blocked;
+        else {
+          task.intentAt = (/* @__PURE__ */ new Date()).toISOString();
+          transition(task, "submitting", "提交意图已持久化");
+          this.save();
+          command.blocked = void 0;
+          command.grant = { assignmentId: task.assignmentId, expires: Date.now() + 1e4 };
+          this.lastSubmit = Date.now();
+          set("lastSubmit:" + batch.identity.publisherId, this.lastSubmit);
+          slot.since = Date.now();
+        }
+        command.ack = r.id;
+        command.seq++;
+        set("command:" + slot.id, command);
+        slot.lastReport = r.id;
+        this.handledReports.add(r.id);
+      } finally {
+        unlock();
+      }
+    }
+    provenUnsubmitted(slot, task, r, command) {
+      if (!this.batch || task.intentAt || task.actual?.unitId || r.actual?.unitId || command.grant) return false;
+      const context = this.intentContext(this.batch, task, slot, r);
+      const journal = get("journal:" + r.assignmentId, void 0);
+      return !!context && !context.task.intentAt && !context.task.actual?.unitId && journal?.state === "done" && journal.batchId === this.batch.id && journal.taskId === task.id && journal.assignmentId === r.assignmentId && journal.report?.id === r.id && journal.report.type === "error" && reportBelongs(journal.report, task, slot.id) && !journal.report.actual?.unitId;
+    }
     async handle(slot, r) {
+      const archived = [...this.archives.values()].find((archive) => archive.batch.tasks.some((task2) => reportBelongs(r, task2, slot.id)));
+      if (archived) {
+        const task2 = archived.batch.tasks.find((task3) => reportBelongs(r, task3, slot.id));
+        if (["stage", "result", "error"].includes(r.type)) await this.handleArchived(archived.batch, slot, task2, r);
+        return;
+      }
       const task = this.batch?.tasks.find((t) => t.assignmentId === r.assignmentId);
-      if (!task || !reportBelongs(r, task, slot.id) || slot.lastReport === r.id) return;
+      if (!task || !reportBelongs(r, task, slot.id) || slot.lastReport === r.id || this.handledReports.has(r.id)) return;
       const cmd = get("command:" + slot.id, { seq: 0 });
       if (cmd.ack === r.id) {
         slot.lastReport = r.id;
+        this.handledReports.add(r.id);
         if (["result", "error"].includes(r.type) && slot.busy === r.assignmentId) slot.busy = void 0;
         return;
       }
@@ -2767,33 +4041,17 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         cmd.seq++;
         set("command:" + slot.id, cmd);
         slot.lastReport = r.id;
+        this.handledReports.add(r.id);
         if (slot.busy === r.assignmentId) slot.busy = void 0;
         return;
       }
       if (r.type === "intent") {
-        const previous = Math.max(this.lastSubmit, get("lastSubmit:" + this.batch.identity.publisherId, 0));
-        const delay = Math.max(0, 2500 - (Date.now() - previous));
-        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-        cmd.grant = void 0;
-        cmd.blocked = void 0;
-        try {
-          const current = await this.adapter.identify();
-          if (!sameIdentity(current, this.batch.identity)) await this.pause("主控账号或应用发生变化");
-        } catch (error) {
-          await this.pause("主控无法确认当前账号：" + error.message);
-        }
-        if (this.batch.phase !== "running") cmd.blocked = "批次已暂停或停止，主控拒绝提交许可";
-        else if (task.intentAt) cmd.blocked = "本分配已有提交意图，禁止重复许可";
-        else {
-          task.intentAt = (/* @__PURE__ */ new Date()).toISOString();
-          transition(task, "submitting", "提交意图已持久化");
-          this.save();
-          cmd.grant = { assignmentId: task.assignmentId, expires: Date.now() + 1e4 };
-          this.lastSubmit = Date.now();
-          set("lastSubmit:" + this.batch.identity.publisherId, this.lastSubmit);
-        }
-      } else if (r.type === "stage") {
-        if (r.stage === "created" && r.actual?.unitId && !task.actual?.unitId) task.actual = { ...task.actual, ...r.actual };
+        await this.handleIntent(this.batch, task, slot, r);
+        return;
+      }
+      slot.since = Math.max(slot.since, Math.min(Date.now(), r.at));
+      if (r.type === "stage") {
+        if (r.actual?.unitId && !task.actual?.unitId) task.actual = { ...task.actual, ...r.actual };
         if (r.stage === "filling" && (task.status === "pending" || task.status === "filling" && r.reason)) transition(task, "filling", r.reason || "");
         if (r.stage === "verifying" && ["submitting", "uncertain", "created-unverified"].includes(task.status)) transition(task, "verifying");
       } else if (r.type === "result" || r.type === "error") {
@@ -2801,9 +4059,9 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
         if (r.actual?.unitId && !idMismatch) task.actual = { ...task.actual, ...r.actual };
         let status = r.status || "uncertain";
         if (idMismatch) status = "created-unverified";
-        if (r.type === "error" && status === "uncertain" && !task.intentAt && !task.actual?.unitId && cmd.blocked && !cmd.grant) status = "failed";
+        if (r.type === "error" && status === "uncertain" && !task.intentAt && !task.actual?.unitId && !cmd.grant && (cmd.blocked || this.provenUnsubmitted(slot, task, r, cmd))) status = "failed";
         if (task.intentAt && status === "failed") status = task.actual?.unitId ? "created-unverified" : "uncertain";
-        if (status === "success" && (task.actual?.format !== this.batch.format || !sameIdentity(task.actual, this.batch.identity))) status = "created-unverified";
+        if (status === "success" && (task.actual?.format !== this.batch.format || !sameIdentity(task.actual, this.batch.identity) || !matchesRequestedConfiguration(task.actual, task.floor, this.batch.mode, this.batch.partnerBidding))) status = "created-unverified";
         if (["success", "exists"].includes(status) && ["submitting", "uncertain", "created-unverified"].includes(task.status)) transition(task, "verifying", "收集保存后的核验结果");
         if (status === "created-unverified" && ["pending", "filling"].includes(task.status)) transition(task, "uncertain", "取得ID，配置待核验");
         transition(task, status, idMismatch ? "执行页返回的ID与已取得ID不符；保留原ID等待核验" : r.reason || "执行页已返回");
@@ -2822,14 +4080,17 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
       cmd.seq++;
       set("command:" + slot.id, cmd);
       slot.lastReport = r.id;
+      this.handledReports.add(r.id);
+      if (this.batch.execution === "paged" && ["result", "error"].includes(r.type) && !slot.busy) this.scheduleCleanup(slot);
     }
     async tick() {
       if (this.tickBusy || this.actionBusy || !this.batch) return;
       this.tickBusy = true;
       try {
+        await Promise.all(this.drainReports());
+        this.collectArchives();
         for (const slot of this.slots.values()) {
-          const r = this.savedReport(slot);
-          if (r && r.id !== slot.lastReport && r.type !== "hello") await this.handle(slot, r);
+          if (slot.closing) continue;
           if (slot.busy && Date.now() - slot.since > 12e4) {
             const t = this.batch.tasks.find((t2) => t2.assignmentId === slot.busy);
             if (t && ["pending", "filling", "submitting", "verifying"].includes(t.status)) {
@@ -2839,41 +4100,75 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
             }
           }
         }
-        if (this.batch.phase === "stopping" && ![...this.slots.values()].some((s) => s.busy)) {
-          const unresolved = this.batch.tasks.some((t) => !["success", "exists"].includes(t.status) && !!t.intentAt || ["created-unverified", "submitting", "verifying"].includes(t.status));
-          this.batch.phase = unresolved ? "paused" : "done";
-          this.save();
+        if (this.batch.stopRequestedAt && this.batch.phase !== "done") this.archiveStopped(this.batch);
+        if (this.batch.phase === "done") {
+          this.cleanupIdlePages();
+          return;
         }
         if (this.batch.phase === "paused" && !this.batch.tasks.some((t) => ["pending", "filling", "submitting", "verifying", "uncertain", "created-unverified"].includes(t.status)) && ![...this.slots.values()].some((s) => s.busy)) {
+          this.cleanupIdlePages();
+          if (this.cleanupWork.size || this.cleanupError) return;
           this.batch.phase = "done";
           this.save();
           this.notice("批次执行结束，请核对并导出结果。");
         }
         if (this.batch.phase !== "running") return;
+        if (this.cleanupError) return;
         if (Date.now() - this.lastIdentityCheck > 5e3 && !this.localBusy) {
           this.lastIdentityCheck = Date.now();
-          try {
-            await this.identify();
-          } catch (e) {
-            await this.pause("当前身份无法确认：" + e.message);
+          if (!this.identityWork) {
+            const batch = this.batch;
+            this.identityWork = this.adapter.identify().then(async (identity) => {
+              if (this.batch !== batch) return;
+              if (!sameIdentity(identity, batch.identity)) {
+                await this.pause("主控账号或应用发生变化");
+                return;
+              }
+              this.identity = identity;
+              this.panel.update({ identity, identityError: "" });
+            }).catch(async (error) => {
+              if (this.batch === batch) await this.pause("当前身份无法确认：" + error.message);
+            }).finally(() => {
+              this.identityWork = void 0;
+            });
+          }
+        }
+        const dispatchBatch = this.batch;
+        while (this.batch === dispatchBatch && dispatchBatch.phase === "running" && !this.localBusy) {
+          if (dispatchBatch.execution === "paged" && this.cleanupWork.size) break;
+          const busy = [...this.slots.values()].filter((slot2) => !!slot2.busy).length;
+          if (!canDispatch(dispatchBatch, busy)) break;
+          const task = dispatchBatch.tasks.find((t) => t.status === "pending" && !t.assignmentId && !t.intentAt && !t.actual?.unitId && Date.now() - Date.parse(t.logs.at(-1)?.at || dispatchBatch.createdAt) > Math.max(0, t.attempts - 1) * 3e3);
+          if (!task) break;
+          let slot = [...this.slots.values()].find((s) => !s.busy && !s.closing && (this.batch.execution === "single" ? s.id === "single:" + this.id : s.probePassed && s.batchId === this.batch.id && !!s.identity && sameIdentity(s.identity, this.batch.identity) && (dispatchBatch.execution !== "paged" || s.taskId === task.id)) && !s.tab?.closed);
+          if (!slot) {
+            if (this.batch.execution === "single") {
+              slot = { id: "single:" + this.id, since: Date.now() };
+              this.addSlot(slot);
+            } else {
+              if (busy > 0) break;
+              try {
+                if (dispatchBatch.execution === "paged") {
+                  await this.warmPaged();
+                  slot = [...this.slots.values()].find((candidate) => candidate.taskId === task.id && candidate.probePassed && !candidate.closing && !candidate.tab?.closed);
+                  if (!slot) throw new Error("未找到本行已预开的执行页");
+                } else slot = await this.probe();
+              } catch (error) {
+                if (this.batch !== dispatchBatch || dispatchBatch.phase !== "running") return;
+                throw error;
+              }
+            }
+          }
+          if (dispatchBatch.execution === "paged") await this.activatePagedSlot(slot);
+          if (this.batch !== dispatchBatch || dispatchBatch.phase !== "running" || !dispatchBatch.tasks.includes(task)) {
+            if (!slot.busy) await this.closeProbe(slot);
             return;
           }
-        }
-        const busy = [...this.slots.values()].filter((s) => s.busy).length;
-        if (canDispatch(this.batch, busy)) {
-          const task = this.batch.tasks.find((t) => t.status === "pending" && !t.assignmentId && Date.now() - Date.parse(t.logs.at(-1)?.at || this.batch.createdAt) > Math.max(0, t.attempts - 1) * 3e3);
-          if (task) {
-            let slot = [...this.slots.values()].find((s) => !s.busy && (this.batch.execution === "single" ? s.id === "single:" + this.id : s.probePassed && s.batchId === this.batch.id && !!s.identity && sameIdentity(s.identity, this.batch.identity)) && !s.tab?.closed);
-            if (!slot) {
-              if (this.batch.execution === "single") {
-                slot = { id: "single:" + this.id, since: Date.now() };
-                this.addSlot(slot);
-              } else slot = await this.probe();
-            }
-            if (this.batch.phase === "running" && task.status === "pending" && !task.assignmentId) await this.dispatch(slot, task);
-          }
+          if (!this.localBusy && task.status === "pending" && !task.assignmentId) await this.dispatch(slot, task);
         }
         if (!this.batch.tasks.some((t) => ["pending", "filling", "submitting", "verifying"].includes(t.status)) && ![...this.slots.values()].some((s) => s.busy)) {
+          this.cleanupIdlePages();
+          if (this.cleanupWork.size || this.cleanupError) return;
           this.batch.phase = this.batch.tasks.some((t) => ["uncertain", "created-unverified"].includes(t.status)) ? "paused" : "done";
           this.save();
           this.notice(this.batch.phase === "done" ? "批次执行结束，请核对并导出结果。" : "存在待核验结果，禁止自动重建。");
@@ -2894,22 +4189,27 @@ ${csvCell2(row.name)},${csvCell2(row.floor)}`, { mode: mode.value })[0];
 
   // src/main.ts
   function saveTab(state) {
-    if (typeof GM_saveTab === "function") GM_saveTab(state);
+    try {
+      if (typeof GM_saveTab === "function") GM_saveTab(state);
+    } catch {
+    }
   }
-  async function main() {
-    if (window.top !== window.self || document.getElementById("abc-panel-host") || document.getElementById("abc-batch-creator") || document.getElementById("abc-worker-status")) return;
+  async function initializeTab(href) {
+    const marker = new URL(href).searchParams.get("__admob_batch_worker");
     const state = await tabState();
-    const url = new URL(location.href), marker = url.searchParams.get("__admob_batch_worker");
     if (marker && /^[\w-]{20,80}$/.test(marker)) {
       state.abcWorkerId = marker;
       saveTab(state);
-      url.searchParams.delete("__admob_batch_worker");
-      history.replaceState(history.state, "", url.href);
     }
     if (!state.abcTabId) {
       state.abcTabId = uuid();
       saveTab(state);
     }
+    return state;
+  }
+  async function main() {
+    if (window.top !== window.self || document.getElementById("abc-panel-host") || document.getElementById("abc-batch-creator") || document.getElementById("abc-worker-status")) return;
+    const state = await initializeTab(location.href);
     const adapter = new AdMobAdapter();
     if (typeof state.abcWorkerId === "string") await runWorker(state.abcWorkerId, adapter);
     else await new Controller(adapter).init();

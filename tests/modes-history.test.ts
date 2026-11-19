@@ -21,7 +21,7 @@ test('all three formats require the chosen saved floor mode; only manual require
       task.actual.floor='1000';
     }
     task.status='verifying';transition(task,'success');assert.equal(task.status,'success');
-    const csv=exportCsv(batch);assert.ok(csv.includes(format==='native'?'信息流（原生广告）':format==='app-open'?'开屏':'插页式'));
+    const csv=exportCsv(batch);assert.ok(csv.includes(format==='native'?'信息流（原生高级广告）':format==='app-open'?'开屏':'插页式'));
     assert.equal(parseInput('A',{mode}).some(row=>row.errors.length>0),mode==='manual');
   });
 });

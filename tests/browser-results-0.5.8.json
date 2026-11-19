@@ -1,0 +1,226 @@
+{
+  "at": "2026-11-19T10:19:32.775Z",
+  "scope": "Isolated headless Chromium; real pages, Web Locks, native storage notifications; simulated GM and delayed loopback backend. Not HubVPS/Tampermonkey or real AdMob acceptance.",
+  "script": {
+    "version": "0.5.8",
+    "bytes": 224150,
+    "sha256": "261c353bc985b221b2f8a68d4f1228d442b1c46717132b88f428f2a5bb190475"
+  },
+  "workload": {
+    "rows": 10,
+    "saveDelayMs": 8000,
+    "throttleMs": 2500
+  },
+  "cases": [
+    {
+      "name": "paged-creates-and-closes",
+      "pass": true,
+      "rows": 5,
+      "confirmedToEndMs": 13979,
+      "workerFocusVerified": true,
+      "allOpenedBeforeCreation": true,
+      "peakActiveAssignments": 1,
+      "peakInflightSaves": 1,
+      "verified": 5,
+      "workerTabsClosed": 5,
+      "extraTabsAtEnd": 0
+    },
+    {
+      "name": "parallel-startup-failure",
+      "pass": true,
+      "pendingRowsAfterFailedParallelStartup": 5,
+      "createRequestsAfterFailedParallelStartup": 0,
+      "explicitSerialMode": "single",
+      "verifiedRows": 5,
+      "createRequests": 5
+    },
+    {
+      "name": "manual-connection-fallback",
+      "pass": true,
+      "automaticOpenHadNoPage": true,
+      "manualLinkPassed": true,
+      "diagnosticMailboxesRemoved": true,
+      "createRequests": 0,
+      "rerunAt": "2026-11-19T10:21:57.501Z",
+      "rerunReason": "Select parallel mode to exercise its existing manual diagnostic fallback after changing the new-batch default to paged."
+    },
+    {
+      "name": "cross-page-locks",
+      "pass": true,
+      "controllerMutex": true,
+      "workerMutex": true,
+      "unrelatedTabRetained": true,
+      "createRequests": 0
+    },
+    {
+      "name": "delayed-submit-lock",
+      "pass": true,
+      "realWebLocks": true,
+      "queuedCallbackBlocked": true,
+      "firstPreClickDelayMs": 2543,
+      "actualClickIntervalMs": 2504,
+      "clicks": [
+        {
+          "worker": "A",
+          "at": 1795083650750
+        },
+        {
+          "worker": "B",
+          "at": 1795083653254
+        }
+      ],
+      "createRequests": 0
+    },
+    {
+      "name": "prefix-and-preview",
+      "pass": true,
+      "addedRows": 3,
+      "generatedNamesTrackFloors": true,
+      "canonicalFloorDuplicateBlocked": true,
+      "manualNamesRestored": true,
+      "manualDuplicateAllowed": true,
+      "partnerBiddingDefaultOff": true,
+      "partnerBiddingPreviewSnapshot": true,
+      "canceledPreviews": 3,
+      "noSubmitBeforeConfirmation": true,
+      "confirmedCreateRequests": 3
+    },
+    {
+      "name": "modes-and-history",
+      "pass": true,
+      "combinations": 23,
+      "succeeded": 23,
+      "createRequests": 23,
+      "historyCopyExportIsolated": true,
+      "completeWorkflowTimestamps": true
+    },
+    {
+      "name": "concurrency-1",
+      "pass": true,
+      "execution": "single",
+      "concurrency": 1,
+      "rows": 10,
+      "inputMs": 1347,
+      "automaticPreparationMs": 37,
+      "elapsedMs": 96699,
+      "elapsedIncludesAutomaticPreparation": true,
+      "rowsPerMinute": 6.204821146030466,
+      "workerTabsOpened": 0,
+      "preparedAlongsideFirst": 0,
+      "peakPages": 1,
+      "peakWorkers": 0,
+      "peakActiveAssignments": 1,
+      "peakHeapBytes": 5956528,
+      "peakDomNodes": 22793,
+      "peakInflightSaves": 1,
+      "tasksPerWorker": [
+        10
+      ],
+      "grantIntervalsMs": {
+        "min": 9545,
+        "median": 9594,
+        "max": 9637
+      },
+      "submitIntervalsMs": {
+        "min": 9495,
+        "median": 9604,
+        "max": 9649
+      },
+      "remoteNotifications": 0,
+      "gmWrites": 216,
+      "gmWriteBytes": 1334992,
+      "storage": {
+        "entries": 18,
+        "bytes": 51130,
+        "gmEntries": 16
+      },
+      "assertions": [
+        "preview-before-confirmation",
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "first-verification-before-remaining-submits",
+        "global-throttle",
+        "one-page-and-one-active-task"
+      ]
+    },
+    {
+      "name": "concurrency-5",
+      "pass": true,
+      "execution": "tabs",
+      "concurrency": 5,
+      "rows": 10,
+      "inputMs": 2428,
+      "automaticPreparationMs": 1453,
+      "elapsedMs": 39580,
+      "elapsedIncludesAutomaticPreparation": true,
+      "rowsPerMinute": 15.159171298635675,
+      "workerTabsOpened": 5,
+      "preparedAlongsideFirst": 4,
+      "peakPages": 6,
+      "peakWorkers": 5,
+      "peakActiveAssignments": 5,
+      "peakHeapBytes": 17133036,
+      "peakDomNodes": 18488,
+      "peakInflightSaves": 4,
+      "tasksPerWorker": [
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "grantIntervalsMs": {
+        "min": 2516,
+        "median": 2527,
+        "max": 8103
+      },
+      "submitIntervalsMs": {
+        "min": 2495,
+        "median": 2524,
+        "max": 8085
+      },
+      "remoteNotifications": 195,
+      "gmWrites": 308,
+      "gmWriteBytes": 1114124,
+      "storage": {
+        "entries": 17,
+        "bytes": 48864,
+        "gmEntries": 15
+      },
+      "assertions": [
+        "preview-before-confirmation",
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "first-verification-before-remaining-submits",
+        "global-throttle",
+        "foreground-tab-startup",
+        "overlapping-preparation",
+        "pool-reuse-and-cap",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    },
+    {
+      "name": "controller-refresh",
+      "pass": true,
+      "createRequests": 1,
+      "restoredSameAssignment": true,
+      "lateIdCollected": true,
+      "savedConfigurationVerified": true
+    }
+  ],
+  "measurements": {
+    "heap": "Sum of page CDP JSHeapUsedSize, sampled every 2 seconds; excludes native browser memory",
+    "serializedBytes": "Logical UTF-16 bytes (2 * string length), not disk usage"
+  },
+  "browser": {
+    "name": "Chromium",
+    "version": "158.0.8127.18",
+    "profile": "temporary isolated Playwright context"
+  },
+  "comparison": {
+    "speedup": 2.4431278423446185,
+    "timeReductionPercent": 59.06886317335236,
+    "additionalWorkerTabs": 5
+  }
+}

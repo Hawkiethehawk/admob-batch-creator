@@ -1,4 +1,5 @@
 import type { Actual, Adapter, AdFormat, FloorMode, Identity, Lookup } from './types.ts';
+import { MEDIA_DEFAULTS, REWARD_DEFAULT } from './types.ts';
 import { decimalEqual, normalizeDecimal, matchesFloor } from './core.ts';
 
 /**
@@ -32,20 +33,32 @@ export const ZH = {
   mode: ['底价模式'],
   amount: ['全局底价'],
   currency: ['底价币种', '币种'],
+  banner: ['横幅广告', '横幅'],
   interstitial: ['插页式广告', '插页式', '插屏'],
+  rewarded: ['激励广告', '激励'],
+  'rewarded-interstitial': ['插页式激励广告', '激励插页式广告', '插页式激励', '激励插页式'],
   'app-open': ['开屏广告', '开屏'],
   native: ['原生高级广告', '原生广告', '原生'],
   next: ['转到下一页', '下一页'],
   first: ['转到首页', '第一页'],
   back: ['返回', '转到广告单元列表'],
 };
-const FORMAT_PAGE: Record<AdFormat, string> = { interstitial: '插页式广告', 'app-open': '开屏广告', native: '原生高级广告' };
+const FORMAT_LABELS: Record<AdFormat, string[]> = {
+  banner: ZH.banner, interstitial: ZH.interstitial, rewarded: ZH.rewarded,
+  'rewarded-interstitial': ZH['rewarded-interstitial'], 'app-open': ZH['app-open'], native: ZH.native,
+};
+const FORMAT_PAGE: Record<AdFormat, string> = {
+  banner: '横幅广告', interstitial: '插页式广告', rewarded: '激励广告',
+  'rewarded-interstitial': '插页式激励广告', 'app-open': '开屏广告', native: '原生高级广告',
+};
 const PUBLISHER_RX = /^pub-\d{16}$/;
 const APP_RX = /^ca-app-pub-(\d{16})~(\d{10})$/;
 const UNIT_RX = /^ca-app-pub-(\d{16})\/(\d{10})$/;
 const ANY_APP_RX = /ca-app-pub-\d{16}~\d{10}/;
 const ANY_UNIT_RX = /ca-app-pub-\d{16}\/\d{10}/;
 const SESSION_IDENTITY = 'abc:live-identity:';
+const DEFAULT_MEDIA_TYPES = MEDIA_DEFAULTS.interstitial;
+const PARTNER_BIDDING_LABEL = '我目前在另一中介平台（而非 AdMob）上将此广告单元用于实时出价。';
 
 export class AdapterError extends Error {
   code: string; fatal: boolean; actual?: Partial<Actual>;
@@ -179,18 +192,25 @@ export function checkConstraints(input: HTMLInputElement, value: string): void {
 function formatFrom(s: string | undefined): AdFormat | undefined {
   if (!s) return undefined;
   const value = s.trim();
-  if (value === '插页式广告' || value === '插页式' || value === '插屏') return 'interstitial';
-  if (value === '开屏广告' || value === '开屏') return 'app-open';
-  if (['原生高级广告', '原生广告', '原生'].includes(value)) return 'native';
-  return undefined;
+  return (Object.keys(FORMAT_LABELS) as AdFormat[]).find(format => FORMAT_LABELS[format].includes(value));
 }
 function formatFromCell(s: string | undefined): AdFormat | undefined {
   if (!s) return undefined;
-  if (/激励/.test(s)) return undefined;
-  if (/插页式广告|^插页式$|插屏/.test(s)) return 'interstitial';
-  if (/开屏广告|^开屏$/.test(s)) return 'app-open';
-  if (/原生高级广告|原生广告|^原生$/.test(s)) return 'native';
-  return undefined;
+  const exact = formatFrom(s);
+  if (exact) return exact;
+  // Longer names must consume their complete label first: 插页式激励广告
+  // is neither an ordinary interstitial nor a rewarded-only ad unit.
+  const labels = (Object.entries(FORMAT_LABELS) as [AdFormat, string[]][])
+    .flatMap(([format, aliases]) => aliases.filter(label => label.length > 2).map(label => ({ format, label })))
+    .sort((a, b) => b.label.length - a.label.length);
+  let remaining = s;
+  const matches = new Set<AdFormat>();
+  for (const { format, label } of labels) {
+    if (!remaining.includes(label)) continue;
+    matches.add(format);
+    remaining = remaining.replaceAll(label, ' ');
+  }
+  return matches.size === 1 ? [...matches][0] : undefined;
 }
 function routeAppId(doc: Document): string | undefined {
   const match = doc.location?.pathname.match(/\/v2\/apps\/(\d{10})(?:\/|$)/);
@@ -263,7 +283,8 @@ function listHref(doc: Document): string | undefined {
 
 export class AdMobAdapter implements Adapter {
   doc: Document; timeout: number;
-  prepared?: { identity: Identity; format: AdFormat; name: string; floor: string; mode: FloorMode; nameInput: HTMLInputElement; floorInput?: HTMLInputElement; form: Element };
+  private openingIdentity?: Identity;
+  prepared?: { identity: Identity; format: AdFormat; name: string; floor: string; mode: FloorMode; partnerBidding: boolean; partnerControlPresent: boolean; nameInput: HTMLInputElement; floorInput?: HTMLInputElement; form: Element };
   submitted = false;
   constructor(doc: Document = document, timeout = 20_000) { this.doc = doc; this.timeout = timeout; }
 
@@ -324,7 +345,7 @@ export class AdMobAdapter implements Adapter {
       if (!appName) return undefined;
       const appIdTextValue = appIdText(this.doc);
       const unit = firstUnit(this.doc);
-      const cached = this.identityFromSession(app);
+      const cached = (this.onCreateRoute() ? this.openingIdentity : undefined) ?? this.identityFromSession(app);
       const cacheUsable = !!cached && cached.appName === appName && cached.appId.endsWith(`~${app}`);
       if (!appIdTextValue && !unit && !cacheUsable) return undefined;
       return { appName, appIdTextValue, unit, cached: cacheUsable ? cached : undefined };
@@ -352,12 +373,31 @@ export class AdMobAdapter implements Adapter {
       evidence: [
         `当前应用路由 ${app}`,
         `当前页面应用名称「${appName}」`,
-        appIdTextValue ? '应用设置页显式 App ID' : '广告位 ID 的发布商前缀与当前应用路由',
+        appIdTextValue ? '应用设置页显式 App ID' : unit ? '广告位 ID 的发布商前缀与当前应用路由' : '已核对的应用路由、页面应用名称与同一执行页的身份记录',
         '底价币种采用用户已确定的批次 USD 配置，不代表页面字段实测币种',
       ],
     };
     this.saveIdentity(identity, app);
     return identity;
+  }
+
+  async identifyCreatePage(expected: Identity): Promise<Identity> {
+    const app = this.targetListApp(expected);
+    await this.wait(() => {
+      if (!this.onCreateRoute() || routeAppId(this.doc) !== app) throw new AdapterError('IDENTITY', '执行页未进入目标应用的创建页');
+      const name = appNameFromPage(this.doc);
+      if (!name || !this.formatCards().length) return undefined;
+      if (name !== expected.appName) throw new AdapterError('IDENTITY', '创建页应用名称与主控不一致');
+      return true;
+    }, '等待目标应用的广告格式选择页');
+    // The format picker has no publisher ID. Bind its observed app to the
+    // confirmed controller identity. Any ID rendered on the page takes priority.
+    this.openingIdentity = expected;
+    try {
+      const actual = await this.identify();
+      if (actual.appId !== expected.appId || actual.publisherId !== expected.publisherId) throw new AdapterError('IDENTITY', '创建页身份与主控不一致');
+      return actual;
+    } finally { this.openingIdentity = undefined; }
   }
 
   async assertIdentity(identity: Identity): Promise<void> {
@@ -371,37 +411,57 @@ export class AdMobAdapter implements Adapter {
     return grids[0];
   }
   private onListRoute(): boolean { return /\/adunits\/list\/?$/.test(this.doc.defaultView?.location.pathname || ''); }
-  async home(): Promise<void> {
-    if (this.onListRoute() && this.grid()) {
-      const search = this.searchInput();
-      if (search?.value.trim()) {
-        await this.setInput(search, '', '清空广告单元搜索');
-        await this.wait(() => !(this.searchInput()?.value.trim()), '等待清空广告单元搜索', 10000).catch(() => undefined);
-      }
-      return;
+  private onCreateRoute(): boolean { return /^\/v2\/apps\/\d{10}\/adunits\/create\/?$/.test(this.doc.location.pathname); }
+  private canRouteWithinDocument(): boolean {
+    return this.doc.location.protocol === 'https:' && ['admob.google.com', 'apps.admob.com'].includes(this.doc.location.hostname);
+  }
+  private async routeWithinDocument(path: string, ready: () => boolean, step: string, timeout = 4000, replace = false): Promise<void> {
+    if (!this.canRouteWithinDocument() || !/^\/v2\/apps\/\d{10}\/adunits\/(?:list|\d{10}\/edit)$/.test(path)) {
+      throw new AdapterError('STRUCTURE', '不能导航到未经核对的应用或广告单元路径');
     }
-    // A submitted create form remains mounted on /adunits/create; the verify
-    // and next lookup must be able to leave it without touching its fields.
-    if (!this.onListRoute()) {
-      try {
-        this.doc.defaultView?.history.back();
-        await this.wait(() => this.onListRoute() && this.grid(), '返回广告单元列表');
-        const search = this.searchInput();
-        if (search?.value.trim()) {
-          await this.setInput(search, '', '清空广告单元搜索');
-          await this.wait(() => !(this.searchInput()?.value.trim()), '等待清空广告单元搜索', 10000).catch(() => undefined);
-        }
-        return;
-      } catch { /* fall through to an observed list link */ }
+    const view = this.doc.defaultView!;
+    // This is the platform's observed SPA history path: no document reload,
+    // worker restart, iframe or new submission is involved.
+    if (view.location.pathname !== path) {
+      if (replace) view.history.replaceState(view.history.state, '', path);
+      else view.history.pushState(view.history.state, '', path);
     }
-    const href = listHref(this.doc);
-    const links = elements(this.doc, 'material-list-item[href],a[href]').filter((e) => /\/adunits\/list$/.test(e.getAttribute('href') || ''));
-    if (links.length === 1) { click(links[0], '返回目标应用广告单元'); await this.wait(() => this.grid(), '等待广告单元列表'); return; }
-    if (href) {
-      const target = elements(this.doc, `material-list-item[href="${href}"],a[href="${href}"]`);
-      if (target.length === 1) { click(target[0], '返回目标应用广告单元'); await this.wait(() => this.grid(), '等待广告单元列表'); return; }
+    view.dispatchEvent(new view.PopStateEvent('popstate', { state: view.history.state }));
+    await this.wait(() => view.location.pathname === path && ready(), step, timeout);
+  }
+  private targetListApp(expected?: Identity): string {
+    const current = routeAppId(this.doc);
+    const requested = expected?.appId.match(APP_RX);
+    if (expected && (!requested || !PUBLISHER_RX.test(expected.publisherId) || `pub-${requested[1]}` !== expected.publisherId)) {
+      throw new AdapterError('IDENTITY', '目标应用或发布商 ID 无效，未导航');
     }
-    throw new AdapterError('STRUCTURE', '当前页面没有可点击的广告单元列表入口');
+    const app = requested?.[2] || current;
+    if (!app) throw new AdapterError('IDENTITY', '无法确认目标应用，不能从应用总览猜测返回路径');
+    if (current && current !== app) throw new AdapterError('IDENTITY', '当前页面是其他应用，未切换应用或执行提交');
+    return app;
+  }
+  private listReady(app: string): boolean {
+    if (!this.onListRoute() || routeAppId(this.doc) !== app || !this.grid()) return false;
+    // AdMob retains the prior list behind editors. The URL and that old grid
+    // alone must not certify a completed SPA transition.
+    if (elements(this.doc, 'format-creator, .instructions-container .instructions').length
+      || elements(this.doc, 'h1,h2').some(heading => /^(创建|修改)广告单元/.test(fieldText(heading)))
+      || elements(this.doc, 'div.header[aria-label="广告单元 ID"], [role="heading"][aria-label="广告单元 ID"]').length) return false;
+    const add = elements(this.doc, 'material-button,button,[role="button"]').filter(control =>
+      sameLabel(accessibleName(control), ZH.add) || sameLabel(fieldText(control), ZH.add));
+    // A usable list with competing Add actions must fail before navigation
+    // can rerender away the ambiguity and accidentally authorize a choice.
+    if (add.length > 1) one(add, '添加广告单元入口');
+    return !!this.searchInput() && add.length === 1;
+  }
+  async home(expected?: Identity): Promise<void> {
+    await this.backToList(expected);
+    if (expected) await this.assertIdentity(expected);
+    const search = this.searchInput();
+    if (search?.value.trim()) {
+      await this.setInput(search, '', '清空广告单元搜索');
+      await this.wait(() => !(this.searchInput()?.value.trim()), '等待清空广告单元搜索', 10000).catch(() => undefined);
+    }
   }
 
   private footerText(): string {
@@ -556,28 +616,80 @@ export class AdMobAdapter implements Adapter {
     if (!name || name !== expected.name) throw new AdapterError('VERIFY', '详情页名称缺失或与列表不一致', true, actual);
     if (!actual.format || actual.format !== expected.format) throw new AdapterError('VERIFY', '详情页格式缺失或与列表不一致', true, actual);
     actual.verified = parsed.verified;
-    await this.backToList();
+    await this.backToList(identity);
     return actual;
   }
-  private async backToList(): Promise<void> {
+  private async backToList(expected?: Identity): Promise<void> {
     const view = this.doc.defaultView!;
+    const app = this.targetListApp(expected);
+    const waitForList = async (): Promise<void> => {
+      // AdMob can switch to /list before mounting its grid, including after a
+      // successful history return. Missing sidebar links do not negate that
+      // in-progress navigation. Retain the known list route while it loads.
+      try { await this.wait(() => this.listReady(app), '等待广告单元列表内容就绪'); }
+      catch (error) {
+        if (this.listReady(app)) return;
+        if (!this.onListRoute() || routeAppId(this.doc) !== app) throw error;
+        try { await this.wait(() => this.listReady(app), '等待已返回的广告单元列表内容就绪'); }
+        catch (finalError) { if (this.listReady(app)) return; throw finalError; }
+      }
+    };
+    if (this.listReady(app)) return;
+    if (this.canRouteWithinDocument()) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          // Returning to a known application is independent of history depth.
+          // A delayed/background route gets one new SPA signal, not another
+          // history Back or a page reload which could lose the worker.
+          await this.routeWithinDocument(`/v2/apps/${app}/adunits/list`, () => this.listReady(app), '打开目标应用广告单元列表', this.timeout, true);
+          return;
+        } catch (error) {
+          // Timers can become runnable together after a browser interruption.
+          // Observe current DOM before treating that queued deadline as final.
+          if (this.listReady(app)) return;
+          if (!this.onListRoute() || routeAppId(this.doc) !== app
+            || !(error instanceof AdapterError) || error.code !== 'TIMEOUT' || attempt === 1) throw error;
+        }
+      }
+    }
+    if (this.onListRoute()) { await waitForList(); return; }
+    // Finish only an explicitly observed creation receipt. Never use a
+    // generic create-form back/submit button as a completion action.
+    if (this.creationReceipt()) {
+      const complete = elements(this.doc, 'material-button,button,[role="button"],a[href]').filter(control =>
+        enabled(control) && ['完成', '返回广告单元列表', '转到广告单元列表'].some(label =>
+          sameLabel(accessibleName(control), [label]) || sameLabel(fieldText(control), [label])));
+      if (complete.length > 1) throw new AdapterError('STRUCTURE', '创建完成后的返回入口不唯一，未操作');
+      if (complete.length === 1) {
+        click(complete[0], '完成并返回广告单元列表');
+        try { await waitForList(); return; } catch { /* observed history remains a fallback */ }
+      }
+    }
     for (let attempt = 0; attempt < 3; attempt++) {
       // The create route keeps the previous list grid mounted behind the
       // editor, so grid presence alone is not evidence that the list is the
       // active route. Require the list URL before reading pagination.
-      if (this.onListRoute() && this.grid()) return;
-      try { view.history.back(); } catch { /* fall through to the link */ }
+      this.targetListApp(expected);
+      if (this.onListRoute()) { await waitForList(); return; }
+      const previous = view.location.href;
+      let popped = false;
+      const returned = (): void => { popped = true; };
+      view.addEventListener('popstate', returned);
       try {
-        await this.wait(() => this.onListRoute() && this.grid(), '返回广告单元列表', 5000);
-        return;
+        view.history.back();
+        await this.wait(() => popped || this.onListRoute() || view.location.href !== previous, '等待返回广告单元列表路由');
       } catch { /* try another history step or the observed list link */ }
-      if (this.onListRoute()) {
-        try { await this.wait(() => this.grid(), '等待广告单元列表', 5000); return; } catch { /* fall through */ }
-      }
-      const link = elements(this.doc, 'material-list-item[href],a[href]').find((e) => /\/adunits\/list$/.test(e.getAttribute('href') || ''));
+      finally { view.removeEventListener('popstate', returned); }
+      const current = routeAppId(this.doc);
+      if (current !== app) throw new AdapterError('IDENTITY', '返回路径已离开目标应用，停止历史回退');
+      if (this.onListRoute()) { await waitForList(); return; }
+      const link = elements(this.doc, 'material-list-item[href],a[href]').find(control => {
+        try { const url = new URL(control.getAttribute('href')!, this.doc.location.href); return url.origin === view.location.origin && url.pathname === `/v2/apps/${app}/adunits/list`; }
+        catch { return false; }
+      });
       if (link) {
         click(link, '返回广告单元列表');
-        await this.wait(() => this.onListRoute() && this.grid(), '等待广告单元列表');
+        await waitForList();
         return;
       }
     }
@@ -599,7 +711,7 @@ export class AdMobAdapter implements Adapter {
   }
   async lookup(identity: Identity, name: string): Promise<Lookup> {
     await this.assertIdentity(identity);
-    await this.home();
+    await this.home(identity);
     if (!this.onListRoute() || !this.grid()) return { complete: false, matches: [], reason: '无法返回广告单元列表，未提交任何变更' };
     // The grid can render before the footer/pagination controls. Wait for the
     // explicit total before claiming anything about list completeness.
@@ -690,6 +802,7 @@ export class AdMobAdapter implements Adapter {
       if (creators.length > 1) throw new AdapterError('STRUCTURE', '创建广告单元表单不唯一，已停止');
       return creators[0];
     }
+    if (this.formatCards().length) return undefined;
     // Preserve the observed legacy titled form when there is no real creator.
     const title = elements(this.doc, 'h1,h2').find((e) => /创建广告单元/.test(txt(e)));
     if (title) return title.closest('main,[role="main"],form') || this.doc.body;
@@ -702,6 +815,111 @@ export class AdMobAdapter implements Adapter {
   }
   private formatLabel(): string | undefined {
     return txt(this.doc.querySelector('div.format-label')) || undefined;
+  }
+  private partnerCheckbox(form: Element): Element | undefined {
+    const cards = elements(form, 'third-party-bidding-card');
+    if (!cards.length) return undefined;
+    const card = one(cards, '合作平台出价组件');
+    const controls = elements(card, '[role="checkbox"], input[type="checkbox"]').filter(control =>
+      sameLabel(accessibleName(control), [PARTNER_BIDDING_LABEL, '合作平台出价'])
+      || sameLabel(fieldText(control.querySelector('.bidding-headline')), [PARTNER_BIDDING_LABEL]));
+    return one(controls, '合作平台出价复选框');
+  }
+  private partnerChecked(control: Element): boolean {
+    if (control.tagName === 'INPUT') return (control as HTMLInputElement).checked;
+    const checked = control.getAttribute('aria-checked');
+    if (checked !== 'true' && checked !== 'false') throw new AdapterError('STRUCTURE', '合作平台出价状态无法读回，未执行提交');
+    return checked === 'true';
+  }
+  private async setPartnerBidding(form: Element, expected: boolean, checkpoint: () => Promise<void>): Promise<boolean> {
+    const control = this.partnerCheckbox(form);
+    if (!control) {
+      if (expected) throw new AdapterError('ROW', '当前广告格式没有可确认的合作平台出价复选框，不能启用此设置', false);
+      return false;
+    }
+    if (this.partnerChecked(control) !== expected) {
+      await checkpoint();
+      click(control, expected ? '启用合作平台出价' : '关闭合作平台出价');
+      await this.wait(() => {
+        const current = this.partnerCheckbox(form);
+        return !!current && this.partnerChecked(current) === expected;
+      }, '回读合作平台出价');
+    }
+    return true;
+  }
+  private assertPartnerBidding(form: Element, expected: boolean, previouslyPresent: boolean): void {
+    const control = this.partnerCheckbox(form);
+    if (!control) {
+      if (expected || previouslyPresent) throw new AdapterError('STRUCTURE', '提交前合作平台出价控件缺失，未执行提交');
+      return;
+    }
+    if (this.partnerChecked(control) !== expected) throw new AdapterError('STRUCTURE', '提交前合作平台出价状态发生变化，未执行提交');
+  }
+  private assertSavedPartnerBidding(expected: boolean, actual: Partial<Actual>): void {
+    let value: string | undefined;
+    try { value = this.savedField('合作平台出价'); }
+    catch (error) {
+      if (error instanceof AdapterError) error.actual = { ...actual, ...error.actual };
+      throw error;
+    }
+    const enabled = value && sameLabel(value, ['已启用', '启用', '是']);
+    const disabled = value && sameLabel(value, ['已停用', '停用', '未启用', '否']);
+    if (enabled || disabled) actual.partnerBidding = !!enabled;
+    if ((value !== undefined && !enabled && !disabled) || (actual.partnerBidding !== undefined && actual.partnerBidding !== expected)
+      || (expected && actual.partnerBidding === undefined)) {
+      throw new AdapterError('VERIFY', '保存后合作平台出价状态缺失、无法识别或与请求不一致，保留 ID 待核验', true, actual);
+    }
+  }
+  private assertPlatformDefaults(form: Element): void {
+    // These per-format labels/states were read from the six live forms.
+    // Bidding-only flows may remove advanced cards. Never invent a missing
+    // setting or mutate unrelated checkboxes/toggles to simulate a default.
+    const format = formatFrom(this.formatLabel());
+    this.assertRewardDefaults(form, format);
+    const expectedMedia = format ? MEDIA_DEFAULTS[format] : DEFAULT_MEDIA_TYPES;
+    const mediaCards = elements(form, 'ad-media-type-card');
+    if (mediaCards.length > 1) throw new AdapterError('STRUCTURE', '广告类型组件不唯一，无法核对默认设置');
+    for (const card of mediaCards) {
+      const controls = elements(card, '[role="checkbox"], input[type="checkbox"]');
+      const labelled = (control: Element, label: string): boolean =>
+        sameLabel(accessibleName(control), [label]) || sameLabel(fieldText(control), [label]);
+      if (controls.some(control => !expectedMedia.some(label => labelled(control, label)))) {
+        throw new AdapterError('STRUCTURE', '广告类型包含当前格式未识别的选项，无法核对默认设置');
+      }
+      for (const label of expectedMedia) {
+        const choice = one(controls.filter(control => labelled(control, label)), `默认广告类型“${label}”`);
+        const checked = choice.tagName === 'INPUT' ? (choice as HTMLInputElement).checked : choice.getAttribute('aria-checked') === 'true';
+        if (!checked) throw new AdapterError('STRUCTURE', `广告类型“${label}”未启用，未执行提交`);
+      }
+    }
+    const frequencyCards = elements(form, 'frequency-cap-card');
+    if (frequencyCards.length > 1) throw new AdapterError('STRUCTURE', '频次上限组件不唯一，无法核对默认设置');
+    for (const card of frequencyCards) {
+      const control = one(elements(card, '[role="switch"]'), '频次上限开关');
+      if (control.getAttribute('aria-checked') !== 'false') throw new AdapterError('STRUCTURE', '频次上限未停用，未执行提交');
+    }
+  }
+  private assertRewardDefaults(form: Element, format: AdFormat | undefined): void {
+    const cards = elements(form, 'reward-settings-card');
+    const rewarded = format === 'rewarded' || format === 'rewarded-interstitial';
+    if (!rewarded) {
+      if (cards.length) throw new AdapterError('STRUCTURE', '当前广告格式出现不适用的奖励设置，未执行提交');
+      return;
+    }
+    // A bidding-only form may remove all advanced/default cards. Otherwise
+    // both rewarded formats must preserve the observed 1 / Reward defaults.
+    if (!cards.length) {
+      const bidding = this.partnerCheckbox(form);
+      if (bidding && this.partnerChecked(bidding)) return;
+    }
+    const card = one(cards, '奖励设置组件');
+    const inputs = elements(card, 'input,textarea');
+    const amount = one(inputs.filter(input => sameLabel(accessibleName(input), ['输入奖品数量'])), '奖励数量输入框') as HTMLInputElement;
+    const item = one(inputs.filter(input => sameLabel(accessibleName(input), ['输入奖品'])), '奖励奖品输入框') as HTMLInputElement;
+    if (amount.value !== REWARD_DEFAULT.amount || amount.getAttribute('aria-invalid') === 'true' || !amount.validity.valid
+      || item.value !== REWARD_DEFAULT.item || item.getAttribute('aria-invalid') === 'true' || !item.validity.valid) {
+      throw new AdapterError('STRUCTURE', `${FORMAT_PAGE[format!]}的奖励设置与平台默认“${REWARD_DEFAULT.amount} ${REWARD_DEFAULT.item}”不一致或无效，未执行提交`);
+    }
   }
   private counter(scope: ParentNode): { current: number; max: number } | undefined {
     const text = txt(scope.querySelector('.counter-container .counter, .counter'));
@@ -733,25 +951,43 @@ export class AdMobAdapter implements Adapter {
     if (!inputMatchesValue(input, value)) throw new AdapterError('ROW', `${step}：页面未接受输入值，未执行提交`, false);
   }
 
-  private async selectFormat(format: AdFormat): Promise<void> {
-    await this.home();
-    const add = elements(this.doc, 'material-button[aria-label="添加广告单元"], [role="button"][aria-label="添加广告单元"]');
-    click(one(add, '添加广告单元'), '添加广告单元');
-    await this.wait(() => elements(this.doc, 'section.ad-format-card').length > 0, '等待广告格式选择');
+  private formatCards(): Element[] {
+    return elements(this.doc, 'section.ad-format-card');
+  }
+
+  private async selectFormat(format: AdFormat, identity: Identity): Promise<void> {
+    if (!this.onCreateRoute() || !this.formatCards().length) {
+      await this.home(identity);
+      const add = elements(this.doc, 'material-button[aria-label="添加广告单元"], [role="button"][aria-label="添加广告单元"]');
+      click(one(add, '添加广告单元'), '添加广告单元');
+      await this.wait(() => this.formatCards().length > 0, '等待广告格式选择');
+    }
     const label = FORMAT_PAGE[format];
-    const cards = elements(this.doc, 'section.ad-format-card').filter((card) => {
+    const cards = this.formatCards().filter((card) => {
       const title = txt(card.querySelector('.header span') || card.querySelector('.header'));
-      return ZH[format].some(value => title === value);
-    }).filter((card) => !/激励/.test(txt(card)));
+      return formatFrom(title) === format;
+    });
     const card = one(cards, `定位${label}格式卡片`);
-    const button = elements(card, 'material-button.select-button, [role="button"]').filter((e) => ZH[format].some(value => accessibleName(e) === value));
+    const button = elements(card, 'material-button.select-button, [role="button"]').filter((e) => formatFrom(accessibleName(e)) === format);
     click(one(button, `选择${label}`), `选择${label}`);
     await this.wait(() => this.activeForm(), `等待${label}创建表单`);
   }
 
   private floorRadio(mode: FloorMode): Element | undefined {
-    const radios = elements(this.doc, '[role="radio"], input[type="radio"]');
-    const found = radios.filter(e => ZH[mode].some(label => sameLabel(accessibleName(e), [label]) || sameLabel(txt(e), [label])));
+    const groups = elements(this.doc, 'ecpm-settings-controls > material-radio-group');
+    const group = groups.length ? one(groups, '底价模式主选项组') : undefined;
+    const radios = elements(group || this.doc, '[role="radio"], input[type="radio"]')
+      .filter(control => !group || control.closest('material-radio-group') === group);
+    const found = radios.filter(control => {
+      // The observed Material radio has a decorative radio_button_* icon and
+      // an exact label in its direct content div. Secondary optimization
+      // groups are not the requested manual/auto/disabled mode controls.
+      const content = [...control.children].find(child => child.matches('div.content'));
+      const labels = content ? [fieldText(content)] : [accessibleName(control), fieldText(control)];
+      for (const id of (control.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)) labels.push(fieldText(this.doc.getElementById(id)));
+      if (control.tagName === 'INPUT') for (const label of (control as HTMLInputElement).labels || []) labels.push(fieldText(label));
+      return ZH[mode].some(label => labels.some(value => sameLabel(value, [label])));
+    });
     return found.length ? one(found, '底价模式选项') : undefined;
   }
   private async selectFloorMode(mode: FloorMode, checkpoint?: () => Promise<void>): Promise<void> {
@@ -780,26 +1016,31 @@ export class AdMobAdapter implements Adapter {
     return { wrap, input };
   }
 
-  async prepare(identity: Identity, format: AdFormat, name: string, floor: string, checkpoint: () => Promise<void>, mode: FloorMode = 'manual'): Promise<void> {
+  async prepare(identity: Identity, format: AdFormat, name: string, floor: string, checkpoint: () => Promise<void>, mode: FloorMode = 'manual', partnerBidding = false): Promise<void> {
     this.prepared = undefined; this.submitted = false;
     await checkpoint(); await this.assertIdentity(identity);
-    if (!this.activeForm()) await this.selectFormat(format);
+    if (!this.activeForm()) await this.selectFormat(format, identity);
     const form = required(this.activeForm(), '未识别到创建广告单元表单');
     await checkpoint(); await this.assertIdentity(identity);
     const declared = this.formatLabel();
     if (!formatFrom(declared) || formatFrom(declared) !== format) throw new AdapterError('STRUCTURE', `创建表单广告格式“${declared || '未知'}”与请求不一致`);
+    const partnerControlPresent = await this.setPartnerBidding(form, partnerBidding, checkpoint);
     const nameInput = this.nameInput(form);
     const counter = this.counter(form.closest('main') || this.doc);
     const maxLength = counter?.max ?? nameInput.maxLength;
     if (maxLength >= 0 && name.length > maxLength) throw new AdapterError('ROW', `名称超过当前页面上限 ${maxLength}，未截断`, false);
     await this.setInput(nameInput, name, '广告单元名称');
     let floorInput: HTMLInputElement | undefined;
-    if (mode === 'manual') {
-      ({ input: floorInput } = await this.manualFloorControl(checkpoint));
-      checkConstraints(floorInput, floor);
-      await this.setInput(floorInput, normalizeDecimal(floor), '全局底价');
-      if (!inputMatchesValue(floorInput, floor)) throw new AdapterError('ROW', '底价输入回读不一致，未执行提交', false);
-    } else await this.selectFloorMode(mode, checkpoint);
+    // Partner bidding units have no floor controls. The legacy mode argument
+    // remains accepted, but it never selects or implies a floor in this path.
+    if (!partnerBidding) {
+      if (mode === 'manual') {
+        ({ input: floorInput } = await this.manualFloorControl(checkpoint));
+        checkConstraints(floorInput, floor);
+        await this.setInput(floorInput, normalizeDecimal(floor), '全局底价');
+        if (!inputMatchesValue(floorInput, floor)) throw new AdapterError('ROW', '底价输入回读不一致，未执行提交', false);
+      } else await this.selectFloorMode(mode, checkpoint);
+    }
     const errors = this.errorText(form);
     if (errors) throw new AdapterError('ROW', errors, false);
     if (nameInput.getAttribute('aria-invalid') === 'true' || floorInput?.getAttribute('aria-invalid') === 'true') throw new AdapterError('ROW', '名称或底价未通过页面校验，未执行提交', false);
@@ -808,7 +1049,9 @@ export class AdMobAdapter implements Adapter {
     const create = elements(this.doc, 'material-button.btn-yes, [role="button"]').filter((e) => sameLabel(txt(e), ['创建广告单元']));
     const createButton = one(create, '创建广告单元按钮');
     if (!enabled(createButton)) throw new AdapterError('ROW', '创建广告单元按钮仍不可用，底价或名称未通过页面校验', false);
-    this.prepared = { identity, format, name, floor: mode === 'manual' ? normalizeDecimal(floor) : '', mode, nameInput, floorInput, form };
+    this.assertPlatformDefaults(form);
+    this.assertPartnerBidding(form, partnerBidding, partnerControlPresent);
+    this.prepared = { identity, format, name, floor: !partnerBidding && mode === 'manual' ? normalizeDecimal(floor) : '', mode, partnerBidding, partnerControlPresent, nameInput, floorInput, form };
   }
 
   async submit(beforeClick?: () => void): Promise<void> {
@@ -818,39 +1061,78 @@ export class AdMobAdapter implements Adapter {
     const form = this.activeForm();
     if (!form || form !== state.form) throw new AdapterError('STRUCTURE', '提交前表单被替换，需重新预检');
     const nameInput = this.nameInput(form);
-    const radio = required(this.floorRadio(state.mode), '提交前缺少底价模式选项');
     if (nameInput.value !== state.name) throw new AdapterError('STRUCTURE', '提交前名称发生变化');
-    if (!(radio.getAttribute('aria-checked') === 'true' || (radio as HTMLInputElement).checked === true)) throw new AdapterError('STRUCTURE', '提交前底价模式发生变化');
-    if (state.mode === 'manual') {
-      const floorWrap = required(this.doc.querySelector('manual-ecpm-floor-input'), '提交前缺少底价组件');
-      const floorInput = required(floorWrap.querySelector('input'), '提交前缺少底价输入');
-      if (!inputMatchesValue(floorInput, state.floor)) throw new AdapterError('STRUCTURE', '提交前名称或底价发生变化');
-      if (currencyOf(floorInput) !== 'USD') throw new AdapterError('CURRENCY', '提交前底价币种不是 USD');
-      checkConstraints(floorInput, state.floor);
+    if (!state.partnerBidding) {
+      const radio = required(this.floorRadio(state.mode), '提交前缺少底价模式选项');
+      if (!(radio.getAttribute('aria-checked') === 'true' || (radio as HTMLInputElement).checked === true)) throw new AdapterError('STRUCTURE', '提交前底价模式发生变化');
+      if (state.mode === 'manual') {
+        const floorWrap = required(this.doc.querySelector('manual-ecpm-floor-input'), '提交前缺少底价组件');
+        const floorInput = required(floorWrap.querySelector('input'), '提交前缺少底价输入');
+        if (!inputMatchesValue(floorInput, state.floor)) throw new AdapterError('STRUCTURE', '提交前名称或底价发生变化');
+        if (currencyOf(floorInput) !== 'USD') throw new AdapterError('CURRENCY', '提交前底价币种不是 USD');
+        checkConstraints(floorInput, state.floor);
+      }
     }
     if (formatFrom(this.formatLabel()) !== state.format) throw new AdapterError('STRUCTURE', '提交前广告格式发生变化');
     const create = elements(this.doc, 'material-button.btn-yes, [role="button"]').filter((e) => sameLabel(txt(e), ['创建广告单元']));
     const createButton = one(create, '提交前创建按钮');
     if (!enabled(createButton)) throw new AdapterError('ROW', '提交前创建按钮不可用', false);
+    this.assertPlatformDefaults(form);
+    this.assertPartnerBidding(form, state.partnerBidding, state.partnerControlPresent);
     // Keep the final storage/permission check synchronous with the native click.
     beforeClick?.();
     this.submitted = true;
     click(createButton, '创建广告单元');
   }
 
-  async verifyById(identity: Identity, unitId: string, name: string, format: AdFormat, floor: string, mode: FloorMode = 'manual'): Promise<Actual> {
+  async verifyById(identity: Identity, unitId: string, name: string, format: AdFormat, floor: string, mode: FloorMode = 'manual', partnerBidding = false): Promise<Actual> {
     await this.assertIdentity(identity);
     if (!UNIT_RX.test(unitId) || !unitId.startsWith(`ca-app-${identity.publisherId}/`)) {
       throw new AdapterError('VERIFY', '已知广告位 ID 与当前发布商不匹配', true, { unitId, publisherId: identity.publisherId, appId: identity.appId });
     }
-    await this.home();
-    const search = this.searchInput();
-    if (!search) throw new AdapterError('VERIFY', '未找到广告单元搜索框，无法按已知 ID 核验');
-    await this.setInput(search, unitId, '按已知广告位 ID 搜索');
-    try { this.grid()?.scrollIntoView({ block: 'start', inline: 'nearest' }); } catch { /* best effort */ }
+    const app = identity.appId.match(APP_RX);
+    const known = unitId.match(UNIT_RX);
+    if (!app || !known || app[1] !== known[1] || `pub-${app[1]}` !== identity.publisherId) throw new AdapterError('IDENTITY', '应用和广告单元的发布商不一致');
+    const listPath = `/v2/apps/${app[2]}/adunits/list`;
+    let directlyOpened = false;
+    if (this.canRouteWithinDocument()) {
+      const detailPath = `/v2/apps/${app[2]}/adunits/${known[2]}/edit`;
+      let fingerprint = '', firstObserved = 0;
+      const settled = (): boolean => {
+        if (this.doc.location.pathname !== detailPath || this.activeForm() || this.savedField('广告单元 ID') !== unitId) {
+          fingerprint = ''; return false;
+        }
+        const savedName = this.savedField('广告单元名称'), savedFormat = this.savedField('广告格式');
+        const savedFloor = partnerBidding ? undefined : this.savedField('有效每千次展示费用底价');
+        if (savedName === undefined || savedFormat === undefined || (!partnerBidding && savedFloor === undefined)) {
+          fingerprint = ''; return false;
+        }
+        const current = JSON.stringify([unitId, savedName, savedFormat, savedFloor]);
+        if (current !== fingerprint) { fingerprint = current; firstObserved = Date.now(); return false; }
+        return Date.now() - firstObserved >= 200;
+      };
+      for (let attempt = 0; attempt < 2 && !directlyOpened; attempt++) {
+        try {
+          await this.routeWithinDocument(detailPath, settled, '按已知 ID 打开保存后配置', this.timeout);
+          directlyOpened = true;
+        } catch (error) {
+          if (settled()) { directlyOpened = true; break; }
+          if (!(error instanceof AdapterError) || error.code !== 'TIMEOUT' || attempt === 1) break;
+          // Keep the exact readonly target and give the SPA one bounded retry.
+          // A different app or unrelated displayed ID never becomes proof.
+          this.targetListApp(identity);
+        }
+      }
+    }
+    if (!directlyOpened) {
+      await this.home(identity);
+      const search = this.searchInput();
+      if (!search) throw new AdapterError('VERIFY', '未找到广告单元搜索框，无法按已知 ID 核验');
+      await this.setInput(search, unitId, '按已知广告位 ID 搜索');
+      try { this.grid()?.scrollIntoView({ block: 'start', inline: 'nearest' }); } catch { /* best effort */ }
     // The input changes before AdMob finishes filtering. Old unrelated rows
     // and an old zero-total footer are not evidence that this ID is absent.
-    const matches = await this.wait(() => {
+      const matches = await this.wait(() => {
       if (this.searchInput()?.value.trim() !== unitId) return undefined;
       const exact = this.rows().filter((candidate) => this.rowInfo(candidate)?.unitId === unitId);
       return exact.length ? exact : undefined;
@@ -858,20 +1140,22 @@ export class AdMobAdapter implements Adapter {
       if (error instanceof AdapterError && error.code === 'TIMEOUT') return [] as Element[];
       throw error;
     });
-    if (matches.length !== 1) throw new AdapterError('VERIFY', '按已知广告位 ID 未找到唯一记录', true, { unitId, publisherId: identity.publisherId, appId: identity.appId });
-    const row = matches[0];
+      if (matches.length !== 1) throw new AdapterError('VERIFY', '按已知广告位 ID 未找到唯一记录', true, { unitId, publisherId: identity.publisherId, appId: identity.appId });
+      const row = matches[0];
     // New units expose the name as an SPA row control; an <a href> is not
     // guaranteed. Clicking the named cell is the same user path as opening the
     // saved edit page and avoids guessing a URL.
-    const cell = row.querySelector('ess-cell[essfield="ad-unit-with-id-info"]');
-    const clickable = cell?.querySelector('a[href*="/adunits/"], .u-primary-text.u-clickable-link, [role="link"]') || cell || row;
-    click(clickable, '打开已知广告位保存后编辑页');
-    await this.wait(() => !this.onListRoute() && !this.activeForm() && this.savedField('广告单元 ID'), '等待已知广告位保存后编辑页');
+      const cell = row.querySelector('ess-cell[essfield="ad-unit-with-id-info"]');
+      const clickable = cell?.querySelector('a[href*="/adunits/"], .u-primary-text.u-clickable-link, [role="link"]') || cell || row;
+      click(clickable, '打开已知广告位保存后编辑页');
+      await this.wait(() => !this.onListRoute() && !this.activeForm() && this.savedField('广告单元 ID'), '等待已知广告位保存后编辑页');
+    }
     await this.assertIdentity(identity);
     const savedUnit = this.savedField('广告单元 ID');
     const savedName = this.savedField('广告单元名称');
     const savedFormat = formatFrom(this.savedField('广告格式'));
-    const parsed = this.savedFloor(this.savedField('有效每千次展示费用底价'));
+    const parsed = partnerBidding ? { mode: 'partner-bidding', floor: '', currency: '', verified: true }
+      : this.savedFloor(this.savedField('有效每千次展示费用底价'));
     const actual: Partial<Actual> = {
       unitId, publisherId: identity.publisherId, appId: identity.appId,
       name: savedName, format: savedFormat, mode: parsed.mode,
@@ -880,11 +1164,18 @@ export class AdMobAdapter implements Adapter {
     if (savedUnit !== unitId) throw new AdapterError('VERIFY', '保存后编辑页广告位 ID 与已知 ID 不一致', true, actual);
     if (savedName !== name) throw new AdapterError('VERIFY', '保存后广告单元名称与请求不一致', true, actual);
     if (savedFormat !== format) throw new AdapterError('VERIFY', '保存后广告格式与请求不一致', true, actual);
-    if (!parsed.verified || !matchesFloor(parsed, floor, mode)) {
+    if (!partnerBidding && (!parsed.verified || !matchesFloor(parsed, floor, mode))) {
       throw new AdapterError('VERIFY', '保存后底价模式或金额与请求不一致', true, actual);
     }
+    this.assertSavedPartnerBidding(partnerBidding, actual);
     actual.verified = true;
-    await this.backToList();
+    // Returning is cleanup; a later navigation failure cannot invalidate the
+    // exact saved configuration already read above. The next prepare/home
+    // still has to establish its own usable list before it can create.
+    try {
+      if (directlyOpened) await this.routeWithinDocument(listPath, () => this.listReady(app[2]), '返回广告单元列表', 4000, true);
+      else await this.backToList(identity);
+    } catch { /* retain the verified proof and known ID */ }
     return actual as Actual;
   }
 
@@ -920,13 +1211,13 @@ export class AdMobAdapter implements Adapter {
     for (const link of elements(unitRows[0], 'a[href]')) {
       const url = new URL(link.getAttribute('href')!, this.doc.location.href);
       if (url.hostname !== 'developers.google.com') continue;
-      const match = url.pathname.match(/^\/admob\/(?:android|ios)\/(interstitial|app-open|native)(?:\/|$)/);
+      const match = url.pathname.match(/^\/admob\/(?:android|ios)\/(banner|interstitial|rewarded-interstitial|rewarded|app-open|native)(?:\/|$)/);
       if (match) formats.add(match[1] as AdFormat);
     }
     if (formats.size !== 1) return fail('广告单元植入指南未明确对应唯一广告格式');
     const format = [...formats][0];
-    const iconFormat = (unit.image.getAttribute('src') || '').match(/admob_format_(interstitial|app_open|app-open|native)_icon/);
-    if (iconFormat && iconFormat[1].replace('_', '-') !== format) return fail('广告格式图标与植入指南冲突');
+    const iconFormat = (unit.image.getAttribute('src') || '').match(/admob_format_(banner|interstitial|rewarded_interstitial|rewarded-interstitial|rewarded|app_open|app-open|native)_icon/);
+    if (iconFormat && iconFormat[1].replaceAll('_', '-') !== format) return fail('广告格式图标与植入指南冲突');
     return { unitId: unit.id, appId: app.id, publisherId: `pub-${unitMatch[1]}`, name: unit.name, appName: app.name, format };
   }
 
@@ -953,7 +1244,7 @@ export class AdMobAdapter implements Adapter {
     return unitId;
   }
 
-  async verify(identity: Identity, format: AdFormat, name: string, floor: string, mode: FloorMode = 'manual'): Promise<Actual> {
+  async verify(identity: Identity, format: AdFormat, name: string, floor: string, mode: FloorMode = 'manual', partnerBidding = false): Promise<Actual> {
     await this.assertIdentity(identity);
     const unitId = await this.waitForUnitId();
     const partial: Partial<Actual> = { unitId, publisherId: identity.publisherId, appId: identity.appId, verified: false };
@@ -963,20 +1254,21 @@ export class AdMobAdapter implements Adapter {
         if (this.recoverCreatedId(identity, name, format) !== unitId) throw new AdapterError('VERIFY', '创建完成说明的广告单元 ID 发生变化');
         // The instructions page confirms creation but has no saved floor.
         // The caller has already persisted this ID; now read its saved editor.
-        return await this.verifyById(identity, unitId, name, format, floor, mode);
+        return await this.verifyById(identity, unitId, name, format, floor, mode, partnerBidding);
       }
       if (this.activeForm()) throw new AdapterError('VERIFY', '仍停留在可编辑创建表单，不能作为已保存配置证据');
       const savedUnit = this.savedField('广告单元 ID');
       if (savedUnit !== unitId) throw new AdapterError('VERIFY', '保存后详情的广告单元 ID 与最初取得的 ID 不一致');
       const savedName = this.savedField('广告单元名称');
       const savedFormat = formatFrom(this.savedField('广告格式'));
-      const floorText = this.savedField('有效每千次展示费用底价');
-      const parsed = this.savedFloor(floorText);
+      const parsed = partnerBidding ? { mode: 'partner-bidding', floor: '', currency: '', verified: true }
+        : this.savedFloor(this.savedField('有效每千次展示费用底价'));
       Object.assign(partial, { name: savedName, format: savedFormat, mode: parsed.mode, floor: parsed.floor ?? (parsed.mode === 'auto' || parsed.mode === 'disabled' ? '' : undefined), currency: parsed.currency });
-      if (!savedName || !savedFormat || parsed.mode === 'unknown' || (mode === 'manual' && !parsed.floor)) throw new AdapterError('VERIFY', '已取得 ID，但保存后页面缺少名称、格式或底价字段');
-      if (savedName !== name || savedFormat !== format || !matchesFloor(parsed, floor, mode)) {
+      if (!savedName || !savedFormat || (!partnerBidding && (parsed.mode === 'unknown' || (mode === 'manual' && !parsed.floor)))) throw new AdapterError('VERIFY', '已取得 ID，但保存后页面缺少名称、格式或底价字段');
+      if (savedName !== name || savedFormat !== format || (!partnerBidding && !matchesFloor(parsed, floor, mode))) {
         throw new AdapterError('VERIFY', '已创建，但保存后配置与请求不一致');
       }
+      this.assertSavedPartnerBidding(partnerBidding, partial);
       return { ...(partial as Actual), verified: true };
     } catch (error) {
       if (error instanceof AdapterError) { error.actual = { ...partial, ...(error.actual || {}) }; throw error; }

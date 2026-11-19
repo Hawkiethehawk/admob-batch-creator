@@ -1,0 +1,289 @@
+{
+  "at": "2026-11-19T08:40:54.587Z",
+  "scope": "Isolated headless Chromium; real pages, Web Locks, native storage notifications; simulated GM and delayed loopback backend. Not HubVPS/Tampermonkey or real AdMob acceptance.",
+  "script": {
+    "version": "0.5.5",
+    "bytes": 189471,
+    "sha256": "2f2e166eed1babd7471c343eb0b95025c7f8be4875bac40989d1acd85f9d6591"
+  },
+  "workload": {
+    "rows": 10,
+    "saveDelayMs": 8000,
+    "throttleMs": 2500
+  },
+  "cases": [
+    {
+      "name": "plugin-alone-silent-tab-fallback",
+      "pass": true,
+      "inputRows": 5,
+      "requestedExecution": "tabs",
+      "requestedConcurrency": 5,
+      "automaticOpenHadNoPage": true,
+      "persistedExecution": "single",
+      "persistedConcurrency": 1,
+      "originalBatchId": "43b4ee26-f5a5-4e6c-8e12-96a05f83f636",
+      "finalBatchId": "43b4ee26-f5a5-4e6c-8e12-96a05f83f636",
+      "preservedOriginalTasks": true,
+      "previewOpenCount": 1,
+      "confirmCount": 1,
+      "externalAssistance": [],
+      "externalWorkerOpens": 0,
+      "peakPages": 1,
+      "createRequests": 5,
+      "verifiedRows": 5,
+      "uniqueIds": 5,
+      "fallbackLogs": [
+        {
+          "at": "2026-11-19T08:41:05.537Z",
+          "step": "pending",
+          "message": "执行页自动连接不可用，已自动切换为单页：自动执行页启动超时：8 秒内未建立连接；已有分配和提交结果保持不变。"
+        },
+        {
+          "at": "2026-11-19T08:41:05.537Z",
+          "step": "pending",
+          "message": "执行页自动连接不可用，已自动切换为单页：自动执行页启动超时：8 秒内未建立连接；已有分配和提交结果保持不变。"
+        },
+        {
+          "at": "2026-11-19T08:41:05.537Z",
+          "step": "pending",
+          "message": "执行页自动连接不可用，已自动切换为单页：自动执行页启动超时：8 秒内未建立连接；已有分配和提交结果保持不变。"
+        },
+        {
+          "at": "2026-11-19T08:41:05.537Z",
+          "step": "pending",
+          "message": "执行页自动连接不可用，已自动切换为单页：自动执行页启动超时：8 秒内未建立连接；已有分配和提交结果保持不变。"
+        },
+        {
+          "at": "2026-11-19T08:41:05.537Z",
+          "step": "pending",
+          "message": "执行页自动连接不可用，已自动切换为单页：自动执行页启动超时：8 秒内未建立连接；已有分配和提交结果保持不变。"
+        }
+      ],
+      "elapsedMs": 21262,
+      "tasks": [
+        {
+          "name": "AUTONOMOUS_1",
+          "floor": "60",
+          "attempts": 1,
+          "status": "success",
+          "unitId": "ca-app-pub-1111111111111111/7000000001",
+          "verified": true
+        },
+        {
+          "name": "AUTONOMOUS_2",
+          "floor": "70",
+          "attempts": 1,
+          "status": "success",
+          "unitId": "ca-app-pub-1111111111111111/7000000002",
+          "verified": true
+        },
+        {
+          "name": "AUTONOMOUS_3",
+          "floor": "80",
+          "attempts": 1,
+          "status": "success",
+          "unitId": "ca-app-pub-1111111111111111/7000000003",
+          "verified": true
+        },
+        {
+          "name": "AUTONOMOUS_4",
+          "floor": "90",
+          "attempts": 1,
+          "status": "success",
+          "unitId": "ca-app-pub-1111111111111111/7000000004",
+          "verified": true
+        },
+        {
+          "name": "AUTONOMOUS_5",
+          "floor": "100",
+          "attempts": 1,
+          "status": "success",
+          "unitId": "ca-app-pub-1111111111111111/7000000005",
+          "verified": true
+        }
+      ]
+    },
+    {
+      "name": "manual-connection-fallback",
+      "pass": true,
+      "automaticOpenHadNoPage": true,
+      "manualLinkPassed": true,
+      "diagnosticMailboxesRemoved": true,
+      "createRequests": 0
+    },
+    {
+      "name": "cross-page-locks",
+      "pass": true,
+      "controllerMutex": true,
+      "workerMutex": true,
+      "unrelatedTabRetained": true,
+      "createRequests": 0
+    },
+    {
+      "name": "delayed-submit-lock",
+      "pass": true,
+      "realWebLocks": true,
+      "queuedCallbackBlocked": true,
+      "firstPreClickDelayMs": 2537,
+      "actualClickIntervalMs": 2511,
+      "clicks": [
+        {
+          "worker": "A",
+          "at": 1795077689377
+        },
+        {
+          "worker": "B",
+          "at": 1795077691888
+        }
+      ],
+      "createRequests": 0
+    },
+    {
+      "name": "prefix-and-preview",
+      "pass": true,
+      "addedRows": 3,
+      "generatedNamesTrackFloors": true,
+      "canonicalFloorDuplicateBlocked": true,
+      "manualNamesRestored": true,
+      "manualDuplicateAllowed": true,
+      "partnerBiddingDefaultOff": true,
+      "partnerBiddingPreviewSnapshot": true,
+      "canceledPreviews": 3,
+      "noSubmitBeforeConfirmation": true,
+      "confirmedCreateRequests": 3
+    },
+    {
+      "name": "modes-and-history",
+      "pass": true,
+      "combinations": 9,
+      "succeeded": 9,
+      "createRequests": 9,
+      "historyCopyExportIsolated": true,
+      "completeWorkflowTimestamps": true
+    },
+    {
+      "name": "concurrency-1",
+      "pass": true,
+      "concurrency": 1,
+      "rows": 10,
+      "inputMs": 1527,
+      "automaticPreparationMs": 423,
+      "elapsedMs": 93880,
+      "elapsedIncludesAutomaticPreparation": true,
+      "rowsPerMinute": 6.391137622496805,
+      "workerTabsOpened": 1,
+      "peakPages": 2,
+      "peakWorkers": 1,
+      "peakActiveAssignments": 1,
+      "peakHeapBytes": 7492276,
+      "peakDomNodes": 22565,
+      "peakInflightSaves": 1,
+      "tasksPerWorker": [
+        10
+      ],
+      "grantIntervalsMs": {
+        "min": 9295,
+        "median": 9328,
+        "max": 9373
+      },
+      "submitIntervalsMs": {
+        "min": 9297,
+        "median": 9329,
+        "max": 9360
+      },
+      "remoteNotifications": 195,
+      "gmWrites": 280,
+      "gmWriteBytes": 1472320,
+      "storage": {
+        "entries": 19,
+        "bytes": 50414,
+        "gmEntries": 17
+      },
+      "assertions": [
+        "preview-before-confirmation",
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "verified-canary-before-expansion",
+        "pool-reuse-and-cap",
+        "global-throttle",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    },
+    {
+      "name": "concurrency-5",
+      "pass": true,
+      "concurrency": 5,
+      "rows": 10,
+      "inputMs": 1141,
+      "automaticPreparationMs": 1384,
+      "elapsedMs": 40616,
+      "elapsedIncludesAutomaticPreparation": true,
+      "rowsPerMinute": 14.77250344691747,
+      "workerTabsOpened": 5,
+      "peakPages": 6,
+      "peakWorkers": 5,
+      "peakActiveAssignments": 5,
+      "peakHeapBytes": 14728704,
+      "peakDomNodes": 21110,
+      "peakInflightSaves": 4,
+      "tasksPerWorker": [
+        3,
+        2,
+        2,
+        2,
+        1
+      ],
+      "grantIntervalsMs": {
+        "min": 2515,
+        "median": 2524,
+        "max": 9368
+      },
+      "submitIntervalsMs": {
+        "min": 2514,
+        "median": 2529,
+        "max": 9353
+      },
+      "remoteNotifications": 215,
+      "gmWrites": 296,
+      "gmWriteBytes": 1416962,
+      "storage": {
+        "entries": 27,
+        "bytes": 64244,
+        "gmEntries": 25
+      },
+      "assertions": [
+        "preview-before-confirmation",
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "verified-canary-before-expansion",
+        "pool-reuse-and-cap",
+        "global-throttle",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    },
+    {
+      "name": "controller-refresh",
+      "pass": true,
+      "createRequests": 1,
+      "restoredSameAssignment": true,
+      "lateIdCollected": true,
+      "savedConfigurationVerified": true
+    }
+  ],
+  "measurements": {
+    "heap": "Sum of page CDP JSHeapUsedSize, sampled every 2 seconds; excludes native browser memory",
+    "serializedBytes": "Logical UTF-16 bytes (2 * string length), not disk usage"
+  },
+  "browser": {
+    "name": "Chromium",
+    "version": "158.0.8127.18",
+    "profile": "temporary isolated Playwright context"
+  },
+  "comparison": {
+    "speedup": 2.3114043726610203,
+    "timeReductionPercent": 56.736259054111635,
+    "additionalWorkerTabs": 4
+  }
+}

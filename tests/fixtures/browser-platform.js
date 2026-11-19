@@ -1,7 +1,8 @@
 // Served only on loopback by tests/browser.mjs; extends the real DOM fixture.
 (() => {
-  const run = new URL(location.href).searchParams.get('run');
+  const run = window.__abcRunId;
   const fixture = window.fixture;
+  fixture.setExtendedForms(true);
   const key = 'fixture:units';
   const sync = () => {
     const saved = JSON.parse(localStorage.getItem(key) || 'null');
@@ -10,18 +11,19 @@
   };
   if (!localStorage.getItem(key)) localStorage.setItem(key, JSON.stringify(fixture.units));
   sync();
+  if (location.pathname.endsWith('/adunits/create')) fixture.renderFormats();
   addEventListener('storage', event => { if (event.key === key) sync(); });
   document.addEventListener('click', event => {
     const button = event.target.closest('.btn-yes');
     if (!button || button.getAttribute('aria-disabled') === 'true') return;
     event.preventDefault(); event.stopImmediatePropagation();
-    const name = document.querySelector('material-input:not([type]) input').value;
-    const floor = document.querySelector('manual-ecpm-floor-input input').value;
-    const selected = [...document.querySelectorAll('[role="radio"]')].filter(radio => radio.getAttribute('aria-checked') === 'true');
-    const mode = selected.length !== 1 ? undefined : selected[0].textContent.includes('人工指定底价') ? 'manual' : selected[0].textContent.includes('已停用') ? 'disabled' : 'auto';
+    const { name, floor, mode, format, partnerBidding } = fixture.readForm();
     if (!name || !mode || (mode === 'manual' && !floor)) throw new Error('Fixture rejected invalid form');
+    if (!fixture.formats.includes(format) || (partnerBidding && (!fixture.partnerFormats.includes(format) || mode !== 'partner-bidding' || floor !== '' || document.querySelector('manual-ecpm-floor-input, .floor-settings [role="radio"]')))) {
+      throw new Error('Fixture rejected unsupported format or bidding floor controls');
+    }
     button.setAttribute('aria-disabled', 'true'); button.classList.add('is-disabled');
-    const request = { name, floor: mode === 'manual' ? floor : '', format: fixture.state.format, mode, manual: mode === 'manual', tab: window.__gmTestTabId };
+    const request = { name, floor: mode === 'manual' ? floor : '', format, mode, partnerBidding, manual: mode === 'manual', tab: window.__gmTestTabId };
     const clicks = JSON.parse(localStorage.getItem('fixture:clicks') || '[]');
     clicks.push({ ...request, at: Date.now() }); localStorage.setItem('fixture:clicks', JSON.stringify(clicks));
     void fetch('/api/create?run=' + encodeURIComponent(run), {

@@ -47,29 +47,36 @@ function panelFixture(t: TestContext) {
   });
   controller.panel = panel; panel.update({ identity: appA });
   const root = dom.window.document.getElementById('abc-panel-host')!.shadowRoot!;
-  const paste = root.querySelector('textarea')!;
-  paste.value = 'Unit,60'; paste.dispatchEvent(new dom.window.Event('input'));
+  [...root.querySelectorAll('button')].find(button => button.textContent === '增加一行')!.click();
+  for (const [label,value] of [['第 1 行广告位名称','Unit'],['第 1 行底价 USD','60']]) {
+    const input=root.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
+    input.value=value;input.dispatchEvent(new dom.window.Event('input'));
+  }
   const execution = root.querySelector<HTMLSelectElement>('[aria-label="执行方式"]')!;
   execution.value = 'single'; execution.dispatchEvent(new dom.window.Event('change'));
-  const confirmation = root.querySelector<HTMLInputElement>('[type="checkbox"]')!;
-  const confirm = () => { confirmation.checked = true; confirmation.dispatchEvent(new dom.window.Event('change')); };
-  confirm();
+  const start=root.querySelector<HTMLButtonElement>('[data-action="start"]')!;
+  const openPreview=async()=>{start.click();await new Promise(resolve=>setImmediate(resolve));};
+  const confirm=async()=>{
+    const button=root.querySelector<HTMLButtonElement>('[data-action="confirm-create"]')!;assert.ok(button);
+    button.click();await new Promise(resolve=>setImmediate(resolve));
+  };
+  const confirmedConfig=(identity:Identity=appA)=>({...panel.getConfig(),confirmedIdentity:{publisherId:identity.publisherId,appId:identity.appId}});
   t.after(() => { panel.destroy(); dom.window.close(); });
-  return { controller, adapter, panel, root, confirmation, confirm, storage, setLive: (identity: Identity) => { live = identity; }, submissions: () => submissions };
+  return { controller, adapter, panel, root, start, openPreview, confirm, confirmedConfig, storage, setLive: (identity: Identity) => { live = identity; }, submissions: () => submissions };
 }
 
 test('a stale SPA confirmation cannot start another application; reconfirming the new identity can', async t => {
   const f = panelFixture(t);
   assert.ok(f.root.querySelector('.identity')!.textContent!.includes('App A'));
   f.setLive(appB);
-  const start = f.root.querySelector<HTMLButtonElement>('[data-action="start"]')!;
-  start.click(); await new Promise(resolve => setImmediate(resolve));
+  await f.openPreview();
+  assert.equal(f.controller.batch,undefined,'打开预览不预检、不创建草稿或提交');
+  await f.confirm();
   assert.equal(f.controller.batch, undefined);
-  assert.equal(f.confirmation.checked, false);
   assert.equal(f.panel.getConfig().confirmedIdentity, undefined);
-  assert.match(f.root.querySelector('.notice')!.textContent!, /确认不一致/);
+  assert.match(f.root.querySelector('.notice')!.textContent!, /预览不一致/);
   assert.ok(![...f.storage.keys()].some(key => key.includes('active:')));
-  f.confirm(); start.click(); await new Promise(resolve => setImmediate(resolve));
+  await f.openPreview();await f.confirm();
   assert.equal(f.controller.batch!.identity.appId, appB.appId);
   assert.equal(f.controller.batch!.phase, 'running');
   assert.equal(f.submissions(), 0);
@@ -79,11 +86,11 @@ test('changing identity during preflight never confirms its draft', async t => {
   const f = panelFixture(t);
   let reads = 0;
   f.adapter.identify = async () => structuredClone(++reads === 1 ? appA : appB);
-  await assert.rejects(() => f.controller.start(f.panel.getConfig()), /确认不一致/);
+  await assert.rejects(() => f.controller.start(f.confirmedConfig()), /预览不一致/);
   assert.equal(f.controller.batch!.phase, 'draft');
   assert.equal(f.controller.batch!.confirmedAt, undefined);
   assert.equal(f.controller.batch!.identity.appId, appA.appId);
-  assert.equal(f.confirmation.checked, false);
+  assert.equal(f.panel.getConfig().confirmedIdentity,undefined);
   assert.ok(![...f.storage.keys()].some(key => key.includes('active:')));
 });
 
@@ -91,22 +98,21 @@ test('a publisher switch and an identification failure invalidate confirmation b
   const f = panelFixture(t);
   const other = { ...appB, publisherId: 'pub-9999999999999999', appId: 'ca-app-pub-9999999999999999~2222222222' };
   f.setLive(other);
-  await assert.rejects(() => f.controller.start(f.panel.getConfig()), /确认不一致/);
-  assert.equal(f.controller.batch, undefined); assert.equal(f.confirmation.checked, false);
-  f.confirm();
+  await assert.rejects(() => f.controller.start(f.confirmedConfig()), /预览不一致/);
+  assert.equal(f.controller.batch, undefined);assert.equal(f.panel.getConfig().confirmedIdentity,undefined);
   f.adapter.identify = async () => { throw new Error('Cannot identify this page'); };
   await assert.rejects(() => f.controller.identify(), /Cannot identify/);
-  assert.equal(f.confirmation.checked, false); assert.equal(f.panel.getConfig().confirmedIdentity, undefined);
-  assert.equal(f.confirmation.disabled, true);
+  assert.equal(f.panel.getConfig().confirmedIdentity, undefined);
+  assert.equal(f.start.disabled, true);
   f.adapter.identify = async () => structuredClone(appA);
   await f.controller.identify();
-  assert.equal(f.confirmation.checked, false);
+  assert.equal(f.panel.getConfig().confirmedIdentity,undefined);
 });
 
 test('start requires an explicit identity confirmation', async t => {
   const f = panelFixture(t);
   const config = f.panel.getConfig(); delete config.confirmedIdentity;
-  await assert.rejects(() => f.controller.start(config), /确认不一致/);
+  await assert.rejects(() => f.controller.start(config), /预览不一致/);
   assert.equal(f.controller.batch, undefined); assert.equal(f.submissions(), 0);
 });
 

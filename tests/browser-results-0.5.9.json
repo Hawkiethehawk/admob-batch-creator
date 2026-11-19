@@ -1,0 +1,233 @@
+{
+  "at": "2026-11-19T11:36:54.072Z",
+  "scope": "Isolated headless Chromium; real pages, Web Locks, native storage notifications; simulated GM and delayed loopback backend. Not HubVPS/Tampermonkey or real AdMob acceptance.",
+  "script": {
+    "version": "0.5.9",
+    "bytes": 240919,
+    "sha256": "a49a2ba5b2e72a0b4354c8f5404663d50dc9c774350e53fe0e8882fd81e4a379"
+  },
+  "workload": {
+    "rows": 10,
+    "saveDelayMs": 8000,
+    "throttleMs": 2500
+  },
+  "cases": [
+    {
+      "name": "stopped-batch-unblocks-next",
+      "pass": true,
+      "migratedLegacyStoppedBatch": true,
+      "unresolvedRowsRetained": 2,
+      "newRowsVerified": 2,
+      "priorRowsRecreated": 0,
+      "extraTabsAtEnd": 0
+    },
+    {
+      "name": "paged-creates-and-closes",
+      "pass": true,
+      "rows": 5,
+      "confirmedToEndMs": 14337,
+      "workerFocusVerified": true,
+      "allOpenedBeforeCreation": true,
+      "peakActiveAssignments": 1,
+      "peakInflightSaves": 1,
+      "verified": 5,
+      "workerTabsClosed": 5,
+      "extraTabsAtEnd": 0
+    },
+    {
+      "name": "parallel-startup-failure",
+      "pass": true,
+      "pendingRowsAfterFailedParallelStartup": 5,
+      "createRequestsAfterFailedParallelStartup": 0,
+      "explicitSerialMode": "single",
+      "verifiedRows": 5,
+      "createRequests": 5
+    },
+    {
+      "name": "manual-connection-fallback",
+      "pass": true,
+      "automaticOpenHadNoPage": true,
+      "manualLinkPassed": true,
+      "diagnosticMailboxesRemoved": true,
+      "createRequests": 0
+    },
+    {
+      "name": "cross-page-locks",
+      "pass": true,
+      "controllerMutex": true,
+      "workerMutex": true,
+      "unrelatedTabRetained": true,
+      "createRequests": 0
+    },
+    {
+      "name": "delayed-submit-lock",
+      "pass": true,
+      "realWebLocks": true,
+      "queuedCallbackBlocked": true,
+      "firstPreClickDelayMs": 2562,
+      "actualClickIntervalMs": 2501,
+      "clicks": [
+        {
+          "worker": "A",
+          "at": 1795088293095
+        },
+        {
+          "worker": "B",
+          "at": 1795088295596
+        }
+      ],
+      "createRequests": 0
+    },
+    {
+      "name": "prefix-and-preview",
+      "pass": true,
+      "addedRows": 3,
+      "generatedNamesTrackFloors": true,
+      "canonicalFloorDuplicateBlocked": true,
+      "manualNamesRestored": true,
+      "manualDuplicateAllowed": true,
+      "partnerBiddingDefaultOff": true,
+      "partnerBiddingPreviewSnapshot": true,
+      "canceledPreviews": 3,
+      "noSubmitBeforeConfirmation": true,
+      "confirmedCreateRequests": 3
+    },
+    {
+      "name": "modes-and-history",
+      "pass": true,
+      "combinations": 23,
+      "succeeded": 23,
+      "createRequests": 23,
+      "historyCopyExportIsolated": true,
+      "completeWorkflowTimestamps": true
+    },
+    {
+      "name": "concurrency-1",
+      "pass": true,
+      "execution": "single",
+      "concurrency": 1,
+      "rows": 10,
+      "inputMs": 1541,
+      "automaticPreparationMs": 29,
+      "elapsedMs": 96448,
+      "elapsedIncludesAutomaticPreparation": true,
+      "rowsPerMinute": 6.220968812209688,
+      "workerTabsOpened": 0,
+      "preparedAlongsideFirst": 0,
+      "peakPages": 1,
+      "peakWorkers": 0,
+      "peakActiveAssignments": 1,
+      "peakHeapBytes": 6242892,
+      "peakDomNodes": 22792,
+      "peakInflightSaves": 1,
+      "tasksPerWorker": [
+        10
+      ],
+      "grantIntervalsMs": {
+        "min": 9568,
+        "median": 9607,
+        "max": 9626
+      },
+      "submitIntervalsMs": {
+        "min": 9566,
+        "median": 9607,
+        "max": 9627
+      },
+      "remoteNotifications": 0,
+      "gmWrites": 216,
+      "gmWriteBytes": 1334992,
+      "storage": {
+        "entries": 18,
+        "bytes": 51130,
+        "gmEntries": 16
+      },
+      "assertions": [
+        "preview-before-confirmation",
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "first-verification-before-remaining-submits",
+        "global-throttle",
+        "one-page-and-one-active-task"
+      ]
+    },
+    {
+      "name": "concurrency-5",
+      "pass": true,
+      "execution": "tabs",
+      "concurrency": 5,
+      "rows": 10,
+      "inputMs": 1512,
+      "automaticPreparationMs": 6351,
+      "elapsedMs": 44314,
+      "elapsedIncludesAutomaticPreparation": true,
+      "rowsPerMinute": 13.539739134359344,
+      "workerTabsOpened": 5,
+      "preparedAlongsideFirst": 4,
+      "peakPages": 6,
+      "peakWorkers": 5,
+      "peakActiveAssignments": 5,
+      "peakHeapBytes": 16295568,
+      "peakDomNodes": 17211,
+      "peakInflightSaves": 4,
+      "tasksPerWorker": [
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "grantIntervalsMs": {
+        "min": 2514,
+        "median": 2523,
+        "max": 8182
+      },
+      "submitIntervalsMs": {
+        "min": 2485,
+        "median": 2516,
+        "max": 8080
+      },
+      "remoteNotifications": 183,
+      "gmWrites": 304,
+      "gmWriteBytes": 1092592,
+      "storage": {
+        "entries": 17,
+        "bytes": 48884,
+        "gmEntries": 15
+      },
+      "assertions": [
+        "preview-before-confirmation",
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "first-verification-before-remaining-submits",
+        "global-throttle",
+        "foreground-tab-startup",
+        "overlapping-preparation",
+        "pool-reuse-and-cap",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    },
+    {
+      "name": "controller-refresh",
+      "pass": true,
+      "createRequests": 1,
+      "restoredSameAssignment": true,
+      "lateIdCollected": true,
+      "savedConfigurationVerified": true
+    }
+  ],
+  "measurements": {
+    "heap": "Sum of page CDP JSHeapUsedSize, sampled every 2 seconds; excludes native browser memory",
+    "serializedBytes": "Logical UTF-16 bytes (2 * string length), not disk usage"
+  },
+  "browser": {
+    "name": "Chromium",
+    "version": "158.0.8127.18",
+    "profile": "temporary isolated Playwright context"
+  },
+  "comparison": {
+    "speedup": 2.1764679333844836,
+    "timeReductionPercent": 54.053998009289984,
+    "additionalWorkerTabs": 5
+  }
+}

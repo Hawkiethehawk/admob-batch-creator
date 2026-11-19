@@ -5,7 +5,7 @@ const header=`// ==UserScript==
 // @name         AdMob Batch Creator
 // @namespace    local.admob-batch-creator
 // @version      ${pkg.version}
-// @description  中文 AdMob 插屏/开屏/信息流批量创建、三种底价模式、历史批次与核验导出
+// @description  中文 AdMob 六种格式批量创建、并发开页、串行、合作平台出价及核验导出
 // @match        https://admob.google.com/*
 // @match        https://apps.admob.com/*
 // @run-at       document-idle
@@ -21,6 +21,7 @@ const header=`// ==UserScript==
 // @grant        GM_setClipboard
 // @grant        GM_getTab
 // @grant        GM_saveTab
+// @grant        window.close
 // ==/UserScript==`;
 await mkdir('dist',{recursive:true});
 const result=await build({entryPoints:['src/main.ts'],bundle:true,write:false,format:'iife',target:['chrome109','edge109'],charset:'utf8',legalComments:'none'});

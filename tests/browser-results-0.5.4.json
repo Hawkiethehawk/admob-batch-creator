@@ -1,0 +1,198 @@
+{
+  "at": "2026-11-19T08:07:35.430Z",
+  "scope": "Isolated headless Chromium; real pages, Web Locks, native storage notifications; simulated GM and delayed loopback backend. Not HubVPS/Tampermonkey or real AdMob acceptance.",
+  "script": {
+    "version": "0.5.4",
+    "bytes": 184941,
+    "sha256": "78839fa6c28e00f07e7b11867cbfafd3619d6f4f377ad567e07ef6063e88d7e6"
+  },
+  "workload": {
+    "rows": 10,
+    "saveDelayMs": 8000,
+    "throttleMs": 2500
+  },
+  "cases": [
+    {
+      "name": "manual-connection-fallback",
+      "pass": true,
+      "automaticOpenHadNoPage": true,
+      "manualLinkPassed": true,
+      "diagnosticMailboxesRemoved": true,
+      "createRequests": 0
+    },
+    {
+      "name": "cross-page-locks",
+      "pass": true,
+      "controllerMutex": true,
+      "workerMutex": true,
+      "unrelatedTabRetained": true,
+      "createRequests": 0
+    },
+    {
+      "name": "delayed-submit-lock",
+      "pass": true,
+      "realWebLocks": true,
+      "queuedCallbackBlocked": true,
+      "firstPreClickDelayMs": 2559,
+      "actualClickIntervalMs": 2510,
+      "clicks": [
+        {
+          "worker": "A",
+          "at": 1795075667142
+        },
+        {
+          "worker": "B",
+          "at": 1795075669652
+        }
+      ],
+      "createRequests": 0
+    },
+    {
+      "name": "prefix-and-preview",
+      "pass": true,
+      "addedRows": 3,
+      "generatedNamesTrackFloors": true,
+      "canonicalFloorDuplicateBlocked": true,
+      "manualNamesRestored": true,
+      "manualDuplicateAllowed": true,
+      "partnerBiddingDefaultOff": true,
+      "partnerBiddingPreviewSnapshot": true,
+      "canceledPreviews": 3,
+      "noSubmitBeforeConfirmation": true,
+      "confirmedCreateRequests": 3
+    },
+    {
+      "name": "modes-and-history",
+      "pass": true,
+      "combinations": 9,
+      "succeeded": 9,
+      "createRequests": 9,
+      "historyCopyExportIsolated": true,
+      "completeWorkflowTimestamps": true
+    },
+    {
+      "name": "concurrency-1",
+      "pass": true,
+      "concurrency": 1,
+      "rows": 10,
+      "inputMs": 1313,
+      "automaticPreparationMs": 310,
+      "elapsedMs": 93993,
+      "elapsedIncludesAutomaticPreparation": true,
+      "rowsPerMinute": 6.383454087006479,
+      "workerTabsOpened": 1,
+      "peakPages": 2,
+      "peakWorkers": 1,
+      "peakActiveAssignments": 1,
+      "peakHeapBytes": 7359536,
+      "peakDomNodes": 21912,
+      "peakInflightSaves": 1,
+      "tasksPerWorker": [
+        10
+      ],
+      "grantIntervalsMs": {
+        "min": 9316,
+        "median": 9345,
+        "max": 9359
+      },
+      "submitIntervalsMs": {
+        "min": 9320,
+        "median": 9333,
+        "max": 9382
+      },
+      "remoteNotifications": 195,
+      "gmWrites": 280,
+      "gmWriteBytes": 1472320,
+      "storage": {
+        "entries": 19,
+        "bytes": 50414,
+        "gmEntries": 17
+      },
+      "assertions": [
+        "preview-before-confirmation",
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "verified-canary-before-expansion",
+        "pool-reuse-and-cap",
+        "global-throttle",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    },
+    {
+      "name": "concurrency-5",
+      "pass": true,
+      "concurrency": 5,
+      "rows": 10,
+      "inputMs": 1880,
+      "automaticPreparationMs": 6056,
+      "elapsedMs": 45537,
+      "elapsedIncludesAutomaticPreparation": true,
+      "rowsPerMinute": 13.176098557217207,
+      "workerTabsOpened": 5,
+      "peakPages": 6,
+      "peakWorkers": 5,
+      "peakActiveAssignments": 5,
+      "peakHeapBytes": 14549624,
+      "peakDomNodes": 21100,
+      "peakInflightSaves": 4,
+      "tasksPerWorker": [
+        3,
+        2,
+        2,
+        2,
+        1
+      ],
+      "grantIntervalsMs": {
+        "min": 2524,
+        "median": 2535,
+        "max": 9378
+      },
+      "submitIntervalsMs": {
+        "min": 2249,
+        "median": 2525,
+        "max": 9398
+      },
+      "remoteNotifications": 215,
+      "gmWrites": 296,
+      "gmWriteBytes": 1416914,
+      "storage": {
+        "entries": 27,
+        "bytes": 64244,
+        "gmEntries": 25
+      },
+      "assertions": [
+        "preview-before-confirmation",
+        "exact-name-floor-format-app-publisher-id",
+        "unique-id-and-no-resubmit",
+        "verified-canary-before-expansion",
+        "pool-reuse-and-cap",
+        "global-throttle",
+        "real-Web-Locks",
+        "native-remote-storage-notifications"
+      ]
+    },
+    {
+      "name": "controller-refresh",
+      "pass": true,
+      "createRequests": 1,
+      "restoredSameAssignment": true,
+      "lateIdCollected": true,
+      "savedConfigurationVerified": true
+    }
+  ],
+  "measurements": {
+    "heap": "Sum of page CDP JSHeapUsedSize, sampled every 2 seconds; excludes native browser memory",
+    "serializedBytes": "Logical UTF-16 bytes (2 * string length), not disk usage"
+  },
+  "browser": {
+    "name": "Chromium",
+    "version": "158.0.8127.18",
+    "profile": "temporary isolated Playwright context"
+  },
+  "comparison": {
+    "speedup": 2.0641017194808615,
+    "timeReductionPercent": 51.55277520666432,
+    "additionalWorkerTabs": 4
+  }
+}

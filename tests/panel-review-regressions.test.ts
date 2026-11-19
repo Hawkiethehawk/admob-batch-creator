@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { mountPanel } from '../src/panel.ts';
 import type { PanelActions, PanelConfig } from '../src/panel.ts';
-import type { FloorMode, Identity } from '../src/types.ts';
+import type { Identity } from '../src/types.ts';
 
 const appA: Identity = { publisherId: 'pub-1234567890123456', appId: 'ca-app-pub-1234567890123456~1111111111', appName: 'App A', evidence: [] };
 const appB: Identity = { ...appA, appId: 'ca-app-pub-1234567890123456~2222222222', appName: 'App B' };
 const ids = (identity: Identity) => ({ publisherId: identity.publisherId, appId: identity.appId });
+const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 
 function fixture(overrides: Partial<PanelActions> = {}) {
   const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://apps.admob.com/v2/apps/1111111111/adunits/list' });
@@ -15,126 +16,118 @@ function fixture(overrides: Partial<PanelActions> = {}) {
   const no = async () => {};
   const panel = mountPanel({ identify: no, preflight: no, start: no, pause: no, resume: no, stop: no, retry: no, verify: no, degrade: no, export: no, copy: no, diagnostics: no, probe: no, ...overrides });
   const root = dom.window.document.querySelector('#abc-panel-host')!.shadowRoot!;
-  const paste = root.querySelector('textarea')!;
-  const confirm = root.querySelector<HTMLInputElement>('input[type=checkbox]')!;
   const start = root.querySelector<HTMLButtonElement>('[data-action=start]')!;
-  const mode = root.querySelector<HTMLSelectElement>('[aria-label="底价模式"]')!;
-  const load = (text: string) => { paste.value = text; paste.dispatchEvent(new dom.window.Event('input')); };
-  const chooseMode = (value: FloorMode) => { mode.value = value; mode.dispatchEvent(new dom.window.Event('change')); };
-  const check = () => { confirm.checked = true; confirm.dispatchEvent(new dom.window.Event('change')); };
   const edit = (label: string, value: string) => {
     const input = root.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
-    input.value = value; input.dispatchEvent(new dom.window.Event('input'));
+    assert.ok(input, label); input.value = value; input.dispatchEvent(new dom.window.Event('input'));
   };
-  return { dom, panel, root, paste, confirm, start, load, chooseMode, check, edit, dispose() { panel.destroy(); dom.window.close(); } };
+  const addRow = (name = 'UNIT', floor = '60') => {
+    [...root.querySelectorAll('button')].find(button => button.textContent === '增加一行')!.click();
+    const line = panel.getConfig().rows.at(-1)!.line;
+    edit(`第 ${line} 行广告位名称`, name); edit(`第 ${line} 行底价 USD`, floor);
+  };
+  const confirm = () => {
+    const button = root.querySelector<HTMLButtonElement>('[data-action="confirm-create"]');
+    assert.ok(button, 'preview confirmation is present'); button.click();
+  };
+  const dialog = () => root.querySelector<HTMLDialogElement>('[role="dialog"][open]');
+  return { dom, panel, root, start, addRow, confirm, dialog, edit, dispose() { panel.destroy(); dom.window.close(); } };
 }
 
-test('confirmation requires an explicitly identified publisher and app', () => {
-  const ui = fixture();
+test('opening creation preview requires a valid explicitly identified publisher and app', async () => {
+  const calls: PanelConfig[] = [];
+  const ui = fixture({ start: async config => { calls.push(config); } });
   try {
-    ui.load('UNIT,60');
-    assert.equal(ui.confirm.disabled, true);
-    ui.check();
-    assert.equal(ui.confirm.checked, false);
-    assert.equal(ui.panel.getConfig().confirmedIdentity, undefined);
-    assert.equal(ui.start.disabled, true);
+    ui.addRow(); assert.equal(ui.start.disabled, true);
+    ui.start.click(); await tick(); assert.equal(ui.dialog(), null); assert.equal(calls.length, 0);
     for (const identity of [{ ...appA, appId: 'invalid' }, { ...appA, publisherId: 'pub-9999999999999999' }]) {
-      ui.panel.update({ identity });
-      ui.check();
-      assert.equal(ui.confirm.disabled, true);
-      assert.equal(ui.start.disabled, true);
+      ui.panel.update({ identity }); assert.equal(ui.start.disabled, true);
+      ui.start.click(); await tick(); assert.equal(ui.dialog(), null); assert.equal(calls.length, 0);
     }
-    ui.panel.update({ identity: appA });
-    assert.equal(ui.confirm.disabled, false);
-    ui.check();
-    assert.equal(ui.start.disabled, false);
+    ui.panel.update({ identity: appA }); assert.equal(ui.start.disabled, false);
+    ui.start.click(); await tick(); assert.ok(ui.dialog()); assert.equal(calls.length, 0);
+    ui.confirm(); await tick(); assert.equal(calls.length, 1); assert.deepEqual(calls[0].confirmedIdentity, ids(appA));
   } finally { ui.dispose(); }
 });
 
-test('start passes the displayed identity captured when the user confirmed', async () => {
+test('modal confirmation passes the displayed identity snapshot to the controller after a stale SPA navigation', async () => {
   const received: PanelConfig[] = [];
   const ui = fixture({ start: async config => { received.push(config); } });
   try {
-    ui.panel.update({ identity: appA });
-    ui.load('UNIT,60'); ui.check();
-    assert.deepEqual(ui.panel.getConfig().confirmedIdentity, ids(appA));
-    const detached = ui.panel.getConfig();
-    detached.confirmedIdentity!.appId = appB.appId;
+    ui.panel.update({ identity: appA }); ui.addRow(); ui.start.click(); await tick();
+    assert.ok(ui.dialog()); assert.equal(received.length, 0);
     ui.panel.update({ identity: structuredClone(appA), notice: '同一身份的状态刷新' });
-    assert.equal(ui.confirm.checked, true);
-    // A SPA navigation has not yet been identified: the controller must receive
-    // the old confirmation snapshot so it can reject the new live identity.
+    assert.ok(ui.dialog());
+    // Unidentified SPA navigation must preserve the displayed confirmation
+    // snapshot so the controller can reject a different live identity.
     ui.dom.window.history.pushState({}, '', '/v2/apps/2222222222/adunits/list');
-    ui.start.click(); await new Promise(resolve => setImmediate(resolve));
-    assert.equal(received.length, 1);
+    ui.confirm(); await tick(); assert.equal(received.length, 1);
     assert.deepEqual(received[0].confirmedIdentity, ids(appA));
+    received[0].confirmedIdentity!.appId = appB.appId;
+    assert.notDeepEqual(ui.panel.getConfig().confirmedIdentity, ids(appB), 'callback mutation cannot change panel identity');
   } finally { ui.dispose(); }
 });
 
-test('identity changes and identification errors invalidate the confirmation snapshot', () => {
-  const ui = fixture();
-  try {
-    ui.panel.update({ identity: appA }); ui.load('UNIT,60'); ui.check();
-    ui.panel.update({ identity: appB });
-    assert.equal(ui.confirm.checked, false);
-    assert.equal(ui.panel.getConfig().confirmedIdentity, undefined);
-    assert.equal(ui.start.disabled, true);
-    ui.check(); assert.deepEqual(ui.panel.getConfig().confirmedIdentity, ids(appB));
-    ui.panel.update({ identityError: '无法确认当前应用' });
-    assert.equal(ui.confirm.checked, false); assert.equal(ui.confirm.disabled, true);
-    assert.equal(ui.panel.getConfig().confirmedIdentity, undefined);
-    ui.panel.update({ identity: appB, identityError: '' });
-    assert.equal(ui.confirm.checked, false); assert.equal(ui.start.disabled, true);
-    ui.check(); ui.panel.update({ identity: undefined });
-    assert.equal(ui.confirm.checked, false); assert.equal(ui.confirm.disabled, true);
-    assert.equal(ui.panel.getConfig().confirmedIdentity, undefined);
-    ui.panel.update({ identity: appA }); ui.check();
-    ui.edit('第 1 行广告位名称', 'EDITED');
-    assert.equal(ui.confirm.checked, false);
-    assert.equal(ui.panel.getConfig().confirmedIdentity, undefined);
-    const mutableIdentity = structuredClone(appA);
-    ui.panel.update({ identity: mutableIdentity }); ui.check();
-    mutableIdentity.appId = appB.appId;
-    assert.deepEqual(ui.panel.getConfig().confirmedIdentity, ids(appA));
-    ui.panel.update({ identity: mutableIdentity });
-    assert.equal(ui.confirm.checked, false);
-    assert.equal(ui.panel.getConfig().confirmedIdentity, undefined);
-  } finally { ui.dispose(); }
-});
-
-test('switching a pasted name-only list to a nonmanual mode removes its header and preserves edits', async t => {
-  for (const mode of ['auto', 'disabled'] as const) await t.test(mode, () => {
-    const ui = fixture();
+test('identity changes, missing identity and identification errors invalidate an open preview before dispatch', async t => {
+  for (const change of [
+    { name: 'app switch', state: { identity: appB } },
+    { name: 'publisher switch', state: { identity: { ...appB, publisherId: 'pub-9999999999999999', appId: 'ca-app-pub-9999999999999999~2222222222' } } },
+    { name: 'identification error', state: { identityError: '无法确认当前应用' } },
+    { name: 'missing identity', state: { identity: undefined } },
+  ]) await t.test(change.name, async () => {
+    const calls: PanelConfig[] = []; const ui = fixture({ start: async config => { calls.push(config); } });
     try {
-      ui.panel.update({ identity: appA });
-      ui.load('广告位名称\nA\nB');
-      ui.edit('第 2 行广告位名称', 'A_EDITED');
-      const prefix = ui.root.querySelector<HTMLInputElement>('[aria-label="名称前缀"]')!;
-      prefix.value = 'prefix_';
-      [...ui.root.querySelectorAll('button')].find(button => button.textContent === '批量应用前缀')!.click();
-      ui.chooseMode(mode);
-      const rows = ui.panel.getConfig().rows;
-      assert.deepEqual(rows.map(row => [row.line, row.name]), [[2, 'prefix_A_EDITED'], [3, 'prefix_B']]);
-      assert.ok(rows.every(row => row.errors.length === 0));
-      assert.ok(!ui.paste.value.includes('广告位名称'));
-      ui.check(); assert.equal(ui.start.disabled, false);
-      ui.chooseMode('manual');
-      assert.deepEqual(ui.panel.getConfig().rows.map(row => row.name), ['prefix_A_EDITED', 'prefix_B']);
-      assert.ok(ui.panel.getConfig().rows.every(row => row.errors.includes('缺失底价')));
+      ui.panel.update({ identity: appA }); ui.addRow(); ui.start.click(); await tick();
+      const staleConfirm = ui.root.querySelector<HTMLButtonElement>('[data-action="confirm-create"]')!; assert.ok(staleConfirm);
+      ui.panel.update(change.state); staleConfirm.click(); await tick();
+      assert.equal(calls.length, 0); assert.equal(ui.panel.getConfig().confirmedIdentity, undefined);
+      assert.ok(!ui.dialog() || ui.dialog()!.hidden);
+      ui.panel.update({ identity: appB, identityError: '' }); assert.equal(calls.length, 0);
+      ui.start.click(); await tick(); ui.confirm(); await tick();
+      assert.equal(calls.length, 1); assert.deepEqual(calls[0].confirmedIdentity, ids(appB));
     } finally { ui.dispose(); }
   });
 });
 
-test('a user-edited header or a real two-column name is retained across a mode change', () => {
+test('an identity object mutated in place cannot change or reuse an open confirmation snapshot', async () => {
+  const received: PanelConfig[] = []; const ui = fixture({ start: async config => { received.push(config); } });
+  try {
+    const mutableIdentity = structuredClone(appA);
+    ui.panel.update({ identity: mutableIdentity }); ui.addRow(); ui.start.click(); await tick();
+    const stale = ui.root.querySelector<HTMLButtonElement>('[data-action="confirm-create"]')!;
+    mutableIdentity.appId = appB.appId;
+    ui.panel.update({ identity: mutableIdentity }); stale.click(); await tick();
+    assert.equal(received.length, 0); assert.equal(ui.panel.getConfig().confirmedIdentity, undefined);
+    assert.equal(ui.dialog(), null);
+    ui.start.click(); await tick(); ui.confirm(); await tick();
+    assert.equal(received.length, 1); assert.deepEqual(received[0].confirmedIdentity, ids(appB));
+  } finally { ui.dispose(); }
+});
+
+test('row edits and cancel invalidate a preview; an old detached confirmation never submits', async () => {
+  const received: PanelConfig[] = []; const ui = fixture({ start: async config => { received.push(config); } });
+  try {
+    ui.panel.update({ identity: appA }); ui.addRow(); ui.start.click(); await tick();
+    const stale = ui.root.querySelector<HTMLButtonElement>('[data-action="confirm-create"]')!;
+    ui.edit('第 1 行底价 USD', '61'); stale.click(); await tick();
+    assert.equal(received.length, 0); assert.ok(!ui.dialog() || ui.dialog()!.hidden);
+    ui.start.click(); await tick();
+    const canceled = ui.root.querySelector<HTMLButtonElement>('[data-action="confirm-create"]')!;
+    ui.root.querySelector<HTMLButtonElement>('[data-action="cancel-preview"]')!.click(); await tick();
+    canceled.click(); await tick(); assert.equal(received.length, 0);
+    ui.start.click(); await tick(); ui.confirm(); await tick();
+    assert.equal(received.length, 1); assert.equal(received[0].rows[0].floor, '61');
+  } finally { ui.dispose(); }
+});
+
+test('mode changes preserve literal manually entered names without imported-header special cases', () => {
   const ui = fixture();
   try {
-    ui.load('广告位名称\nA');
-    ui.edit('第 1 行广告位名称', 'INTENDED_UNIT');
-    ui.chooseMode('auto');
-    assert.deepEqual(ui.panel.getConfig().rows.map(row => row.name), ['INTENDED_UNIT', 'A']);
-    ui.chooseMode('manual');
-    ui.load('广告位名称,60\nB,40');
-    ui.chooseMode('disabled');
-    assert.deepEqual(ui.panel.getConfig().rows.map(row => [row.name, row.floor]), [['广告位名称', '60'], ['B', '40']]);
+    ui.addRow('广告位名称', '60'); ui.addRow('A  help_outline', '40');
+    const mode = ui.root.querySelector<HTMLSelectElement>('[aria-label="底价模式"]')!;
+    for (const value of ['auto', 'disabled', 'manual']) {
+      mode.value = value; mode.dispatchEvent(new ui.dom.window.Event('change'));
+      assert.deepEqual(ui.panel.getConfig().rows.map(row => [row.name, row.floor]), [['广告位名称', '60'], ['A  help_outline', '40']]);
+    }
   } finally { ui.dispose(); }
 });

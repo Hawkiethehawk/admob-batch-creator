@@ -1,4 +1,4 @@
-import type { Actual, AdFormat, Batch, FloorMode, Identity, InputRow, Lookup, Status, Task } from './types.ts';
+import type { Actual, AdFormat, Batch, ExecutionMode, FloorMode, Identity, InputRow, Lookup, Status, Task } from './types.ts';
 import { FORMAT_ZH, MODE_ZH, STATUS_ZH } from './types.ts';
 import { summarizeBatch, batchElapsed } from './history.ts';
 
@@ -147,6 +147,10 @@ export interface LookupClassification { status: 'pending' | 'exists' | 'conflict
 export function matchesFloor(actual: Partial<Actual>, floor: string, mode: FloorMode = 'manual'): boolean {
   return actual.mode === mode && (mode !== 'manual' || (actual.currency === 'USD' && actual.floor !== undefined && decimalEqual(actual.floor, floor)));
 }
+export function matchesRequestedConfiguration(actual: Partial<Actual>, floor: string, mode: FloorMode = 'manual', partnerBidding = false): boolean {
+  return partnerBidding ? actual.partnerBidding === true && actual.mode === 'partner-bidding'
+    : actual.partnerBidding !== true && matchesFloor(actual, floor, mode);
+}
 export function classifyLookup(lookup: Lookup, identity: Identity, format: AdFormat, name: string, floor: string, mode: FloorMode = 'manual'): LookupClassification {
   if (!lookup.complete) return { status: 'uncertain', reason: lookup.reason || '已有广告位读取不完整，不能判定不存在' };
   const matches = lookup.matches.filter((match) => match.name === name);
@@ -184,7 +188,7 @@ export function transition(task: Task, status: Status, reason = ''): Task {
     if (!actual?.verified || !actual.unitId || !/^ca-app-pub-\d{16}\/\d{10}$/.test(actual.unitId)
       || !actual.publisherId || !actual.appId || !actual.unitId.startsWith(`ca-app-${actual.publisherId}/`)
       || !actual.appId.startsWith(`ca-app-${actual.publisherId}~`) || actual.name !== task.name
-      || !actual.format || !matchesFloor(actual, task.floor, task.mode ?? 'manual')) {
+      || !actual.format || !matchesRequestedConfiguration(actual, task.floor, task.mode ?? 'manual', task.partnerBidding)) {
       throw new Error('实际保存配置与广告位 ID 尚未完整核验，不能标记成功');
     }
   }
@@ -213,7 +217,8 @@ export function recoverTask(task: Task): Task {
 }
 
 function newId(): string { return globalThis.crypto.randomUUID(); }
-export function createBatch(rows: InputRow[], identity: Identity, format: AdFormat, concurrency: number, execution: 'tabs' | 'single', sourceUrl: string, controllerId: string, mode: FloorMode = 'manual'): Batch {
+export function createBatch(rows: InputRow[], identity: Identity, format: AdFormat, concurrency: number, execution: ExecutionMode, sourceUrl: string, controllerId: string, mode: FloorMode = 'manual', partnerBidding = false): Batch {
+  if (partnerBidding) mode = 'disabled';
   if (!['manual', 'auto', 'disabled'].includes(mode)) throw new Error('不支持的底价模式');
   if (!Array.isArray(rows) || !rows.length) throw new Error('请输入至少一条广告位');
   for (const row of rows) {
@@ -226,13 +231,14 @@ export function createBatch(rows: InputRow[], identity: Identity, format: AdForm
   }
   if (!/^pub-\d{16}$/.test(identity.publisherId) || !/^ca-app-pub-\d{16}~\d{10}$/.test(identity.appId) || !identity.appId.startsWith(`ca-app-${identity.publisherId}~`)) throw new Error('发布商 ID 或应用 ID 无效或不匹配');
   if (![1, 2, 3, 4, 5].includes(concurrency)) throw new Error('并发数必须为 1、2、3、4 或 5');
-  if (!['interstitial', 'app-open', 'native'].includes(format)) throw new Error('不支持的广告格式');
-  if (!['tabs', 'single'].includes(execution)) throw new Error('不支持的执行模式');
+  if (!Object.hasOwn(FORMAT_ZH, format)) throw new Error('不支持的广告格式');
+  if (partnerBidding && format === 'rewarded-interstitial') throw new Error('插页式激励广告不支持合作平台出价');
+  if (!['tabs', 'single', 'paged'].includes(execution)) throw new Error('不支持的执行模式');
   if (typeof controllerId !== 'string' || !controllerId.trim()) throw new Error('主控标识不能为空');
   return {
-    schema: 1, id: newId(), identity: structuredClone(identity), format, mode, currency: 'USD', concurrency: execution === 'single' ? 1 : concurrency,
+    schema: 1, id: newId(), identity: structuredClone(identity), format, mode, partnerBidding, currency: 'USD', concurrency: execution === 'tabs' ? concurrency : 1,
     execution, sourceUrl, phase: 'draft', createdAt: new Date().toISOString(), canaryPassed: false, controllerId,
-    tasks: rows.map((row) => ({ id: newId(), line: row.line, name: row.name, mode, floor: mode === 'manual' ? normalizeDecimal(row.floor) : '', status: 'pending', reason: '', attempts: 0, logs: [] })),
+    tasks: rows.map((row) => ({ id: newId(), line: row.line, name: row.name, mode, ...(partnerBidding ? { partnerBidding: true } : {}), floor: mode === 'manual' ? normalizeDecimal(row.floor) : '', status: 'pending', reason: '', attempts: 0, logs: [] })),
   };
 }
 
@@ -249,7 +255,7 @@ export function exportCsv(batch: Batch, filter: 'all' | 'success' | 'exceptions'
   const tasks = batch.tasks.filter((task) => filter === 'all' || (filter === 'success' ? success.has(task.status) : !success.has(task.status)));
   const records: unknown[][] = [[ '原始行号', '发布商ID', '应用名称', 'App ID', '广告位名称', '广告格式', '请求底价模式', '请求底价USD', '实际底价模式', '实际底价', '实际币种', '广告位ID', '状态', '原因', '完成时间', '批次ID', '批次开始时间', '批次结束时间', '批次总耗时' ]];
   const timing = summarizeBatch(batch);
-  for (const task of tasks) records.push([task.line, batch.identity.publisherId, batch.identity.appName, batch.identity.appId, task.name, FORMAT_ZH[batch.format], MODE_ZH[batch.mode ?? 'manual'], task.floor, task.actual?.mode, task.actual?.floor, task.actual?.currency, task.actual?.unitId, STATUS_ZH[task.status], task.reason, task.finishedAt, batch.id, timing.startedAt, timing.completedAt, batchElapsed(timing)]);
+  for (const task of tasks) records.push([task.line, batch.identity.publisherId, batch.identity.appName, batch.identity.appId, task.name, FORMAT_ZH[batch.format], batch.partnerBidding ? '不适用（合作平台出价）' : MODE_ZH[batch.mode ?? 'manual'], batch.partnerBidding ? '' : task.floor, task.actual?.mode === 'partner-bidding' ? '不适用（合作平台出价）' : task.actual?.mode, task.actual?.floor, task.actual?.currency, task.actual?.unitId, STATUS_ZH[task.status], task.reason, task.finishedAt, batch.id, timing.startedAt, timing.completedAt, batchElapsed(timing)]);
   return `\uFEFF${records.map((row) => row.map(csvCell).join(',')).join('\r\n')}\r\n`;
 }
 

@@ -48,3 +48,22 @@ test('missing notifications retain polling and a timeout cleans up its listener'
   t.mock.timers.tick(1000); await rejection;
   assert.deepEqual(removed, [19]);
 });
+
+test('a delayed deadline reconciles a durable value before reporting a timeout', async t => {
+  let runDeadline: (() => void) | undefined;
+  let ready: true | undefined;
+  const removed: number[] = [];
+  t.mock.method(globalThis, 'setTimeout', (callback: () => void) => {
+    runDeadline = callback;
+    return 0;
+  });
+  Object.assign(globalThis, {
+    GM_addValueChangeListener: () => 20,
+    GM_removeValueChangeListener: (id: number) => removed.push(id),
+  });
+  const waiting = waitFor(() => ready, 60000, 'command:worker');
+  ready = true;
+  runDeadline!();
+  assert.equal(await waiting, true);
+  assert.deepEqual(removed, [20]);
+});

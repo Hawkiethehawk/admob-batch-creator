@@ -6,11 +6,12 @@ import { AdMobAdapter, AdapterError } from '../src/adapter.ts';
 
 const html = readFileSync(new URL('./live_fixture.html', import.meta.url), 'utf8');
 const unitId = 'ca-app-pub-1111111111111111/3333333003';
+const fixtureList = 'http://localhost/v2/apps/2222222222/adunits/list';
 
 for (const stale of ['unrelated rows', 'zero-total footer']) {
   test('known-ID search waits through stale ' + stale + ' until its exact row renders', async t => {
     const dom = new JSDOM(html, {
-      url: 'https://admob.google.com/v2/apps/2222222222/adunits/list', runScripts: 'dangerously', pretendToBeVisual: true,
+      url: fixtureList, runScripts: 'dangerously', pretendToBeVisual: true,
     });
     t.after(() => dom.window.close());
     const doc = dom.window.document;
@@ -49,7 +50,7 @@ for (const stale of ['unrelated rows', 'zero-total footer']) {
 
 test('an absent exact ID waits to its deadline and preserves that known ID unverified', async t => {
   const dom = new JSDOM(html, {
-    url: 'https://admob.google.com/v2/apps/2222222222/adunits/list', runScripts: 'dangerously',
+    url: fixtureList, runScripts: 'dangerously',
   });
   t.after(() => dom.window.close());
   const doc = dom.window.document;

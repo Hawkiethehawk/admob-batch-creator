@@ -18,41 +18,111 @@ function fixture(overrides: Partial<PanelActions> = {}) {
     const found = [...root.querySelectorAll('button')].find(node => node.textContent === text);
     assert.ok(found, `button missing: ${text}`); return found;
   };
-  const paste = root.querySelector('textarea')!;
-  const load = (text: string) => {
-    paste.value = text; paste.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+  const edit = (label: string, value: string) => {
+    const input = root.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+    assert.ok(input, `input missing: ${label}`);
+    input.value = value; input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    return input;
   };
-  const confirm = (value = true) => {
-    const checkbox = root.querySelector<HTMLInputElement>('input[type=checkbox]')!;
-    checkbox.checked = value; checkbox.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  const addRow = (name = '', floor = '') => {
+    button('增加一行').click();
+    const row = handle.getConfig().rows.at(-1)!;
+    if (name) edit(`第 ${row.line} 行广告位名称`, name);
+    if (floor) edit(`第 ${row.line} 行底价 USD`, floor);
+    return row.line;
   };
-  return { dom, handle, root, button, paste, load, confirm, dispose() { handle.destroy(); dom.window.close(); } };
+  const rows = (values: [string, string][]) => { for (const [name, floor] of values) addRow(name, floor); };
+  const chooseMode = (value: string) => {
+    const mode = root.querySelector<HTMLSelectElement>('select[aria-label="底价模式"]')!;
+    mode.value = value; mode.dispatchEvent(new dom.window.Event('change'));
+  };
+  const prefixSwitch = () => root.querySelector<HTMLInputElement>('input[role="switch"][aria-label="批量应用前缀"]')!;
+  const togglePrefix = (value: boolean) => {
+    const control = prefixSwitch(); assert.ok(control);
+    control.checked = value; control.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  };
+  return { dom, handle, root, button, edit, addRow, rows, chooseMode, prefixSwitch, togglePrefix, dispose() { handle.destroy(); dom.window.close(); } };
 }
 const identity = { publisherId: 'pub-1234567890123456', appId: 'ca-app-pub-1234567890123456~1234567890', appName: '测试应用', evidence: [] };
 
-test('mode selection accepts name-only rows without manual amounts and exposes all three formats',()=>{
+test('逐行输入保留三种底价模式和六种广告格式，新增行按钮位于表格下方',()=>{
   const ui=fixture();try{
     const mode=ui.root.querySelector<HTMLSelectElement>('select[aria-label="底价模式"]')!;
     assert.equal(mode.value,'manual');assert.deepEqual([...mode.options].map(o=>o.value),['manual','auto','disabled']);
-    assert.deepEqual([...ui.root.querySelector<HTMLSelectElement>('select[aria-label="广告格式"]')!.options].map(o=>o.value),['interstitial','app-open','native']);
+    assert.deepEqual([...ui.root.querySelector<HTMLSelectElement>('select[aria-label="广告格式"]')!.options].map(o=>o.value),['interstitial','app-open','banner','native','rewarded','rewarded-interstitial']);
     assert.equal(ui.root.querySelector('[aria-label="请求底价币种"]'),null);
     assert.equal([...ui.root.querySelectorAll('button')].some(b=>b.textContent==='解析到清单'),false);
-    mode.value='disabled';mode.dispatchEvent(new ui.dom.window.Event('change'));ui.load('广告位名称\nA\nB');
+    assert.equal(ui.root.querySelector('textarea,input[type="file"]'),null);
+    const table=ui.root.querySelector('.input-table')!;
+    assert.ok(table.compareDocumentPosition(ui.button('增加一行')) & ui.dom.window.Node.DOCUMENT_POSITION_FOLLOWING);
+    mode.value='disabled';mode.dispatchEvent(new ui.dom.window.Event('change'));ui.rows([['A',''],['B','']]);
     assert.equal(ui.handle.getConfig().rows.length,2);assert.ok(ui.handle.getConfig().rows.every(row=>!row.errors.length));
     assert.equal(ui.root.querySelector<HTMLTableCellElement>('.input-table thead tr')!.children[2].hasAttribute('hidden'),true);
-    ui.confirm();assert.equal(ui.button('开始创建').disabled,false);
+    assert.equal(ui.button('开始创建').disabled,false);assert.equal(ui.prefixSwitch().disabled,true);
+    ui.chooseMode('auto');assert.equal(ui.prefixSwitch().disabled,true);
     mode.value='manual';mode.dispatchEvent(new ui.dom.window.Event('change'));
     assert.ok(ui.handle.getConfig().rows.every(row=>row.errors.includes('缺失底价')));
   }finally{ui.dispose();}
 });
-test('applying a prefix repeatedly is idempotent, changing or clearing it preserves base names',()=>{
+test('前缀开关按规范底价生成名称，修改底价或前缀不重复叠加，关闭恢复手动名称',()=>{
   const ui=fixture();try{
-    ui.load('A,1\nB,2');const prefix=ui.root.querySelector<HTMLInputElement>('[aria-label="名称前缀"]')!;
-    prefix.value='p_';ui.button('批量应用前缀').click();ui.button('批量应用前缀').click();
-    assert.deepEqual(ui.handle.getConfig().rows.map(row=>row.name),['p_A','p_B']);
-    prefix.value='q_';ui.button('批量应用前缀').click();assert.deepEqual(ui.handle.getConfig().rows.map(row=>row.name),['q_A','q_B']);
-    prefix.value='x'.repeat(80);ui.button('批量应用前缀').click();assert.ok(ui.handle.getConfig().rows.every(row=>row.errors.some(error=>error.includes('超过'))));
-    prefix.value='';ui.button('批量应用前缀').click();assert.deepEqual(ui.handle.getConfig().rows.map(row=>[row.name,row.floor]),[['A','1'],['B','2']]);
+    ui.rows([['Manual  A','60.0'],['Manual B','40']]);
+    ui.edit('名称前缀','  p_  ');ui.togglePrefix(true);ui.togglePrefix(true);
+    assert.deepEqual(ui.handle.getConfig().rows.map(row=>row.name),['p_60','p_40']);
+    assert.ok([...ui.root.querySelectorAll<HTMLInputElement>('.input-table input[aria-label$="广告位名称"]')].every(input=>input.readOnly));
+    assert.equal(ui.root.querySelector<HTMLSelectElement>('[aria-label="底价模式"]')!.disabled,true);
+    ui.edit('第 1 行底价 USD','70.50');assert.deepEqual(ui.handle.getConfig().rows.map(row=>row.name),['p_70.5','p_40']);
+    ui.edit('名称前缀',' q_ ');assert.deepEqual(ui.handle.getConfig().rows.map(row=>row.name),['q_70.5','q_40']);
+    ui.edit('名称前缀','x'.repeat(80));assert.ok(ui.handle.getConfig().rows.every(row=>row.errors.some(error=>error.includes('超过'))));
+    ui.togglePrefix(false);assert.deepEqual(ui.handle.getConfig().rows.map(row=>[row.name,row.floor]),[['Manual  A','70.5'],['Manual B','40']]);
+    assert.ok([...ui.root.querySelectorAll<HTMLInputElement>('.input-table input[aria-label$="广告位名称"]')].every(input=>!input.readOnly));
+    assert.equal(ui.root.querySelector<HTMLSelectElement>('[aria-label="底价模式"]')!.disabled,false);
+  }finally{ui.dispose();}
+});
+test('前缀开启时新增行的手动名称为空，关闭再开启保留各自名称与最新底价',()=>{
+  const ui=fixture();try{
+    ui.rows([['Original','1']]);ui.edit('名称前缀','unit_');ui.togglePrefix(true);
+    ui.addRow('','2');assert.deepEqual(ui.handle.getConfig().rows.map(row=>row.name),['unit_1','unit_2']);
+    ui.togglePrefix(false);assert.deepEqual(ui.handle.getConfig().rows.map(row=>row.name),['Original','']);
+    assert.equal(ui.button('开始创建').disabled,true);
+    ui.edit('第 2 行广告位名称','Independent');ui.edit('第 1 行广告位名称','Edited');
+    ui.togglePrefix(true);ui.edit('第 2 行底价 USD','3.00');
+    assert.deepEqual(ui.handle.getConfig().rows.map(row=>row.name),['unit_1','unit_3']);
+    ui.togglePrefix(false);assert.deepEqual(ui.handle.getConfig().rows.map(row=>row.name),['Edited','Independent']);
+  }finally{ui.dispose();}
+});
+test('仅在前缀开关开启时阻止当前清单中生成的重复名称',()=>{
+  const ui=fixture();try{
+    ui.rows([['Same','60'],['Same','60.0']]);assert.ok(ui.handle.getConfig().rows.every(row=>!row.errors.length));
+    assert.equal(ui.button('开始创建').disabled,false,'手动重名仍被允许');
+    ui.edit('名称前缀','dup_');ui.togglePrefix(true);
+    assert.deepEqual(ui.handle.getConfig().rows.map(row=>row.name),['dup_60','dup_60']);
+    assert.ok(ui.handle.getConfig().rows.some(row=>row.errors.some(error=>/重复/.test(error))));
+    assert.equal(ui.button('开始创建').disabled,true);
+    ui.edit('第 2 行底价 USD','61');assert.equal(ui.button('开始创建').disabled,false);
+    ui.edit('第 2 行底价 USD','60.00');assert.equal(ui.button('开始创建').disabled,true);
+    ui.togglePrefix(false);assert.ok(ui.handle.getConfig().rows.every(row=>!row.errors.length));assert.equal(ui.button('开始创建').disabled,false);
+  }finally{ui.dispose();}
+});
+test('合作平台出价默认未选，预览展示选择且确认配置保存其快照',async()=>{
+  const received:PanelConfig[]=[];const ui=fixture({start:async config=>{received.push(config);}});
+  try{
+    ui.rows([['A','60']]);const partner=ui.root.querySelector<HTMLInputElement>('input[aria-label="合作平台出价"]')!;
+    assert.ok(partner);assert.equal(partner.checked,false);assert.equal(ui.handle.getConfig().partnerBidding,false);
+    ui.button('开始创建').click();await new Promise(resolve=>setImmediate(resolve));
+    assert.match(ui.root.querySelector('[role="dialog"]')!.textContent!,/合作平台出价/);
+    assert.match(ui.root.querySelector('[role="dialog"]')!.textContent!,/未勾选/);
+    ui.root.querySelector<HTMLButtonElement>('[data-action="cancel-preview"]')!.click();await new Promise(resolve=>setImmediate(resolve));
+    partner.checked=true;partner.dispatchEvent(new ui.dom.window.Event('change'));
+    assert.equal(ui.root.querySelector<HTMLInputElement>('[aria-label="第 1 行底价 USD"]')!.closest('td')!.hidden,true);
+    assert.equal(ui.prefixSwitch().disabled,true);
+    ui.button('开始创建').click();await new Promise(resolve=>setImmediate(resolve));
+    assert.match(ui.root.querySelector('[role="dialog"]')!.textContent!,/已勾选/);
+    assert.equal(received.length,0);
+    ui.root.querySelector<HTMLButtonElement>('[data-action="confirm-create"]')!.click();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(received.length,1);assert.equal(received[0].partnerBidding,true);
+    assert.equal(received[0].rows[0].floor,'');
+    partner.checked=false;partner.dispatchEvent(new ui.dom.window.Event('change'));assert.equal(received[0].partnerBidding,true);
   }finally{ui.dispose();}
 });
 test('history selection displays and exports the selected batch without replacing the active task',async()=>{
@@ -68,6 +138,108 @@ test('history selection displays and exports the selected batch without replacin
     ui.button('导出全部').click();await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(received,[['all',old.id]]);
     choose.value='';choose.dispatchEvent(new ui.dom.window.Event('change'));await new Promise(resolve=>setImmediate(resolve));
     assert.ok(ui.root.querySelector('.batch-meta')!.textContent!.includes(current.id));assert.equal(current.phase,'running');
+  }finally{ui.dispose();}
+});
+
+test('stopping archives unresolved rows, clears their editor once and leaves a new draft available',()=>{
+  const ui=fixture({verifyHistory:async()=>{}});
+  try{
+    const old=batch();old.phase='paused';
+    old.tasks[0].status='uncertain';old.tasks[0].intentAt=new Date().toISOString();
+    old.tasks[1].status='created-unverified';old.tasks[1].intentAt=new Date().toISOString();
+    old.tasks[1].actual={unitId:'ca-app-pub-1234567890123456/1234567891',verified:false};
+    ui.handle.update({batch:old});
+    assert.equal(ui.handle.getConfig().rows.length,2);
+    assert.match(ui.root.textContent!,/还有 2 条提交结果或配置待核验/);
+    old.stopRequestedAt=new Date().toISOString();ui.handle.update({batch:old});
+    assert.equal(ui.button('继续').disabled,true);
+    assert.equal(ui.button('继续').title,'');
+    assert.doesNotMatch(ui.root.textContent!,/核验通过后再继续/);
+    old.phase='done';old.completedAt=new Date().toISOString();
+    const proof=structuredClone(old);
+    ui.handle.update({batch:old});
+    assert.match(ui.root.querySelector('.batch-meta')!.textContent!,/已停止/);
+    assert.doesNotMatch(ui.root.querySelector('.batch-meta')!.textContent!,/已结束/);
+    assert.equal(ui.handle.getConfig().rows.length,0,'stopped rows are not offered for another create');
+    assert.equal(ui.root.querySelectorAll('.result-table tbody tr').length,2);
+    assert.match(ui.root.querySelector('.result-table')!.textContent!,/1234567891/);
+    assert.equal(ui.button('继续').disabled,true);assert.equal(ui.button('重试明确失败项').disabled,true);
+    assert.equal(ui.button('核验结果不确定项').disabled,false);
+    ui.rows([['A','60']]);
+    assert.equal(ui.button('开始创建').disabled,false,'a deliberately entered duplicate name is still a new request');
+    ui.handle.update({batch:old,history:[summarizeBatch(old)],historyBatch:structuredClone(old)});
+    assert.deepEqual(ui.handle.getConfig().rows.map(row=>[row.name,row.floor]),[['A','60']],'repeated archive notifications do not clear a separate draft');
+    assert.deepEqual(old,proof,'UI retirement preserves the original IDs, status and intent');
+  }finally{ui.dispose();}
+});
+
+test('a refreshed stopped batch leaves a blank editor without erasing an independently entered draft',()=>{
+  for(const draftFirst of [false,true]){
+    const ui=fixture();
+    try{
+      const old=batch();old.phase='done';old.stopRequestedAt=new Date().toISOString();old.tasks[0].status='uncertain';old.tasks[0].intentAt=new Date().toISOString();
+      if(draftFirst)ui.rows([['Separate draft','90']]);
+      ui.handle.update({batch:old});
+      assert.equal(ui.handle.getConfig().rows.length,draftFirst?1:0);
+      if(!draftFirst)ui.rows([['Separate draft','90']]);
+      ui.handle.update({batch:structuredClone(old),history:[summarizeBatch(old)]});
+      assert.deepEqual(ui.handle.getConfig().rows.map(row=>row.name),['Separate draft']);
+      assert.equal(ui.button('开始创建').disabled,false);
+    }finally{ui.dispose();}
+  }
+});
+
+test('stopped history verification and observed IDs use archive-scoped APIs while a new batch stays untouched',async()=>{
+  const old=batch();old.phase='done';old.stopRequestedAt=new Date().toISOString();
+  old.tasks[0].status='created-unverified';old.tasks[0].intentAt=new Date().toISOString();old.tasks[0].actual={unitId:'ca-app-pub-1234567890123456/1234567890',verified:false};
+  old.tasks[1].status='uncertain';old.tasks[1].intentAt=new Date().toISOString();
+  const current=batch();current.phase='done';current.tasks[0].name='New batch result';
+  const proof=structuredClone(current),calls:unknown[]=[];
+  const ui=fixture({
+    viewHistory:async id=>ui.handle.update({historyBatch:id?old:undefined}),
+    verify:async()=>{calls.push('wrong-active-verify');},recordObservedId:async()=>{calls.push('wrong-active-record');},
+    verifyHistory:async id=>{calls.push(['verify',id]);},
+    recordHistoryObservedId:async(id,taskId,unitId)=>{calls.push(['record',id,taskId,unitId]);},
+    export:async(filter,id)=>{calls.push(['export',filter,id]);},copy:async id=>{calls.push(['copy',id]);},
+  });
+  try{
+    ui.handle.update({batch:current,history:[summarizeBatch(old)]});ui.rows([['Fresh draft','80']]);
+    const choose=ui.root.querySelector<HTMLSelectElement>('[aria-label="任务批次"]')!;
+    choose.value=old.id;choose.dispatchEvent(new ui.dom.window.Event('change'));await new Promise(resolve=>setImmediate(resolve));
+    assert.match(ui.root.querySelector('.batch-meta')!.textContent!,/已停止/);
+    for(const text of ['开始创建','继续','重试明确失败项','停止','降级为单页'])assert.equal(ui.button(text).disabled,true,text);
+    assert.equal(ui.button('核验结果不确定项').disabled,false);
+    ui.root.querySelector<HTMLButtonElement>('[data-action="verify"]')!.click();await new Promise(resolve=>setImmediate(resolve));
+    const id=ui.root.querySelector<HTMLInputElement>('input[placeholder="成功说明中的广告位 ID"]')!;
+    const record=ui.root.querySelector<HTMLButtonElement>('[data-action="record-observed-id"]')!;
+    assert.ok(id);assert.equal(record.dataset.batchId,old.id);assert.equal(record.dataset.taskId,old.tasks[1].id);
+    id.value='ca-app-pub-9999999999999999/1234567890';id.dispatchEvent(new ui.dom.window.Event('input'));assert.equal(record.disabled,true);
+    id.value='ca-app-pub-1234567890123456/1234567891';id.dispatchEvent(new ui.dom.window.Event('input'));assert.equal(record.disabled,false);
+    record.click();await new Promise(resolve=>setImmediate(resolve));
+    ui.button('导出异常').click();await new Promise(resolve=>setImmediate(resolve));
+    ui.button('复制“名称 + ID”').click();await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(calls,[['verify',old.id],['record',old.id,old.tasks[1].id,id.value],['export','exceptions',old.id],['copy',old.id]]);
+    assert.deepEqual(current,proof);
+    assert.equal(old.tasks[0].actual?.unitId,'ca-app-pub-1234567890123456/1234567890');
+    choose.value='';choose.dispatchEvent(new ui.dom.window.Event('change'));await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(ui.handle.getConfig().rows.map(row=>row.name),['Fresh draft']);
+    assert.equal(ui.button('开始创建').disabled,false);
+  }finally{ui.dispose();}
+});
+
+test('resume hints are hidden for history and stopped archives, and history cannot verify during active work',async()=>{
+  const current=batch();current.phase='paused';current.tasks[0].status='uncertain';current.tasks[0].intentAt=new Date().toISOString();
+  const old=batch();old.phase='done';old.stopRequestedAt=new Date().toISOString();old.tasks[0].status='uncertain';old.tasks[0].intentAt=new Date().toISOString();
+  const ui=fixture({verifyHistory:async()=>{},viewHistory:async id=>ui.handle.update({historyBatch:id?old:undefined})});
+  try{
+    ui.handle.update({batch:current,history:[summarizeBatch(old)]});
+    assert.match(ui.button('继续').title,/先核验/);
+    const choose=ui.root.querySelector<HTMLSelectElement>('[aria-label="任务批次"]')!;
+    choose.value=old.id;choose.dispatchEvent(new ui.dom.window.Event('change'));await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(ui.button('继续').title,'');assert.doesNotMatch(ui.root.textContent!,/核验通过后再继续/);
+    current.phase='running';ui.handle.update({batch:current});assert.equal(ui.button('核验结果不确定项').disabled,true);
+    choose.value='';choose.dispatchEvent(new ui.dom.window.Event('change'));await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(ui.button('继续').title,'');
   }finally{ui.dispose();}
 });
 test('执行页链接在等待连接时可打开，完成后清除且拒绝外部或非执行页地址', () => {
@@ -107,81 +279,74 @@ test('补录成功说明 ID 仅针对暂停的已提交不确定行，并交给�
   } finally {ui.dispose();}
 });
 
-test('CSV/Excel 清单保留原始行号、逗号名称及每行独立底价', () => {
+test('新增行保留名称字面值、原行号及每行独立底价', () => {
   const ui = fixture();
   try {
-    ui.load('\uFEFF广告位名称,底价USD\r\n"A,B",60\r\nC,40');
-    assert.deepEqual(ui.handle.getConfig().rows.map(row => [row.line, row.name, row.floor]), [[2, 'A,B', '60'], [3, 'C', '40']]);
-    assert.equal(ui.handle.getConfig().concurrency, 5);
-    ui.load('广告位名称\t底价USD\nExcel A\t20\nExcel B\t15');
-    assert.deepEqual(ui.handle.getConfig().rows.map(row => [row.name, row.floor]), [['Excel A', '20'], ['Excel B', '15']]);
+    ui.rows([['A,B','60'],['C  D','40']]);
+    assert.deepEqual(ui.handle.getConfig().rows.map(row => [row.line, row.name, row.floor]), [[1, 'A,B', '60'], [2, 'C  D', '40']]);
+    assert.equal(ui.handle.getConfig().execution, 'paged');
+    assert.equal(ui.handle.getConfig().concurrency, 1);
   } finally { ui.dispose(); }
 });
 
-test('粘贴立即更新清单，开始需要整批确认，编辑后必须再次确认', () => {
+test('行内编辑不打断焦点，未通过校验的清单不能打开预览', () => {
   const ui = fixture();
   try {
-    ui.load('A,60\nB,40');
-    assert.equal(ui.button('开始创建').disabled, true);
-    ui.confirm(); assert.equal(ui.button('开始创建').disabled, false);
+    ui.rows([['A','60'],['B','40']]);
+    assert.equal(ui.button('开始创建').disabled, false);
     ui.handle.update({ ready: true, checks: [{ label: '预检通过', ok: true }] });
     assert.equal(ui.button('开始创建').disabled, false);
-    ui.confirm(false); assert.equal(ui.button('开始创建').disabled, true);
-    ui.confirm();
     const name = ui.root.querySelector<HTMLInputElement>('.input-table input')!;
     name.focus(); name.value = 'A edited'; name.dispatchEvent(new ui.dom.window.Event('input', { bubbles: true }));
-    assert.equal(ui.button('开始创建').disabled, true);
+    assert.equal(ui.button('开始创建').disabled, false);
     assert.equal(ui.root.activeElement, name, '行内修改不重建输入控件或打断焦点');
     ui.handle.update({ identity, notice: '只更新状态' });
     assert.equal(ui.root.activeElement, name);
     assert.equal(ui.handle.getConfig().rows[0].name, 'A edited');
-    ui.paste.value = 'C,10'; ui.paste.dispatchEvent(new ui.dom.window.Event('input'));
-    assert.deepEqual(ui.handle.getConfig().rows.map(row=>[row.name,row.floor]), [['C','10']]);
+    ui.edit('第 1 行底价 USD','bad');
     assert.equal(ui.root.querySelector('button[data-action=preflight]'), null);
-    assert.equal(ui.button('开始创建').disabled, true, '粘贴更换后清除旧确认');
+    assert.equal(ui.button('开始创建').disabled, true, '无效金额不能进入确认预览');
   } finally { ui.dispose(); }
 });
 
-test('解析错误、允许重复名称与空新增行不会被表格序列化吞掉', () => {
+test('手动名称允许重复，空新增行阻止预览且删除后恢复', () => {
   const ui = fixture();
   try {
-    ui.load('A,60,unexpected');
-    assert.match(ui.handle.getConfig().rows[0].errors.join(' '), /两列/);
-    ui.confirm(); assert.equal(ui.button('开始创建').disabled, true);
-    ui.load('A,60\nA,40');
+    ui.rows([['A','60'],['A','40']]);
     assert.ok(ui.handle.getConfig().rows.every(row => row.errors.length === 0));
-    ui.confirm(); assert.equal(ui.button('开始创建').disabled, false);
-    ui.load('A,60\nB,40'); ui.button('增加一行').click();
+    assert.equal(ui.button('开始创建').disabled, false);
+    ui.button('增加一行').click();
     const rows = ui.handle.getConfig().rows;
     assert.equal(rows.length, 3); assert.equal(rows[1].errors.length, 0); assert.ok(rows[2].errors.length);
     const remove = [...ui.root.querySelectorAll('button')].find(node => node.getAttribute('aria-label') === '删除第 3 行')!;
-    remove.click(); ui.confirm(); assert.equal(ui.button('开始创建').disabled, false);
+    remove.click(); assert.equal(ui.button('开始创建').disabled, false);
   } finally { ui.dispose(); }
 });
 
 test('活动与暂停批次冻结配置，结束批次可以预检新清单', () => {
   const ui = fixture();
   try {
-    ui.load('A,60\nB,40');
-    ui.handle.update({ ready: true }); ui.confirm();
+    ui.rows([['A','60'],['B','40']]);
+    ui.handle.update({ ready: true });
     assert.equal(ui.button('开始创建').disabled, false);
     const current = batch(); current.phase = 'running'; ui.handle.update({ batch: current });
     assert.equal(ui.button('暂停').disabled, false);
     assert.equal(ui.button('降级为单页').disabled, false);
     assert.equal(ui.button('继续').disabled, true);
     assert.equal(ui.button('开始创建').disabled, true);
-    assert.equal(ui.paste.disabled, true);
+    assert.equal(ui.root.querySelector<HTMLInputElement>('[aria-label="第 1 行广告位名称"]')!.disabled, true);
+    assert.equal(ui.prefixSwitch().disabled,true);
     current.phase = 'paused'; ui.handle.update({ batch: current });
     assert.equal(ui.button('暂停').disabled, true);
     assert.equal(ui.button('继续').disabled, false);
     assert.equal(ui.button('降级为单页').disabled, false);
     assert.equal(ui.button('开始创建').disabled, true, '暂停批次使用继续或核验，不覆盖原任务');
     current.phase = 'done'; ui.handle.update({ batch: current });
-    assert.equal(ui.paste.disabled, false);
+    assert.equal(ui.root.querySelector<HTMLInputElement>('[aria-label="第 1 行广告位名称"]')!.disabled, false);
     assert.equal(ui.root.querySelector('button[data-action=preflight]'), null);
     assert.equal(ui.button('继续').disabled, true);
     assert.equal(ui.button('降级为单页').disabled, true);
-    assert.equal(ui.button('开始创建').disabled, true, '结束批次不能用残留的ready与确认状态再次开始');
+    assert.equal(ui.root.querySelector('[role="dialog"][open]'),null,'结束批次不会自行打开新批预览');
     current.phase = 'paused'; delete current.confirmedAt; ui.handle.update({ batch: current });
     assert.equal(ui.button('继续').disabled, true, '未确认开始的草稿不能通过继续绕过整批确认');
     current.confirmedAt = new Date().toISOString(); current.stopRequestedAt = new Date().toISOString(); ui.handle.update({ batch: current });
@@ -240,7 +405,7 @@ test('恢复后按批次显示 USD，缺少会话币种不会要求单独确认�
     assert.equal(ui.root.querySelector('[aria-label="请求底价币种"]'), null);
     assert.doesNotMatch(ui.root.textContent!, /尚未在真实底价字段确认|创建前必须重新确认/);
     assert.equal(ui.button('继续').disabled, false);
-    assert.equal(ui.root.querySelector<HTMLInputElement>('input[type=checkbox]')!.checked, false, '不通过底价政策替用户勾选整批确认');
+    assert.equal(ui.root.querySelector('[role="dialog"][open]'),null,'恢复不会自行打开新批创建预览');
   } finally { ui.dispose(); }
 });
 
@@ -287,7 +452,7 @@ test('重试仅开放无提交意图的明确失败项，配置待核验项进�
     const current = batch(); current.phase = 'paused'; current.tasks[0].status = 'failed';
     ui.handle.update({ batch: current }); assert.equal(ui.button('重试明确失败项').disabled, false);
     current.stopRequestedAt = new Date().toISOString(); ui.handle.update({ batch: current });
-    assert.equal(ui.button('重试明确失败项').disabled, false, '停止后允许用户明确重试已确认未提交的安全失败项');
+    assert.equal(ui.button('重试明确失败项').disabled, true, '停止意图保留后只能核验，不重新派发旧任务');
     assert.equal(ui.button('继续').disabled, true, '重试操作真正执行并清理停止意图前仍禁止直接继续');
     assert.equal(ui.button('开始创建').disabled, true);
     delete current.stopRequestedAt;
@@ -324,13 +489,25 @@ test('面板以文本显示结果，折叠、销毁及重复挂载保护有效',
   } finally { ui.dispose(); }
 });
 
-test('开始直接传递当前配置，不暴露独立预检操作', async () => {
-  const received: PanelConfig[] = []; let starts = 0;
-  const ui = fixture({ preflight: async () => { throw new Error('没有独立预检点击'); }, start: async config => { received.push(config); starts++; } });
+test('开始只打开预览，取消不执行，确认一次才传递隔离的当前配置', async () => {
+  const received: PanelConfig[] = []; let preflights = 0;
+  const ui = fixture({ preflight: async () => { preflights++; }, start: async config => { received.push(config); } });
   try {
-    ui.load('A,60'); ui.confirm(); ui.button('开始创建').click();
+    ui.rows([['A','60'],['B','40']]);ui.button('开始创建').click();
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(received.length, 1); assert.equal(starts, 1);
+    const preview=ui.root.querySelector('[role="dialog"]')!;assert.ok(preview);assert.match(preview.textContent!,/创建预览/);
+    assert.deepEqual([...preview.querySelectorAll('dt')].map(label=>label.textContent), ['应用', 'AdMob App ID', '发布商 ID']);
+    assert.ok(preview.textContent!.includes('A'));assert.ok(preview.textContent!.includes('60'));
+    assert.equal(received.length,0);assert.equal(preflights,0);
+    ui.root.querySelector<HTMLButtonElement>('[data-action="cancel-preview"]')!.click();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(received.length,0);assert.equal(preflights,0);
+    assert.equal(ui.root.querySelector('[role="dialog"][open]'),null);
+    ui.button('开始创建').click();await new Promise(resolve=>setImmediate(resolve));
+    const confirm=ui.root.querySelector<HTMLButtonElement>('[data-action="confirm-create"]')!;assert.equal(confirm.textContent,'确认创建');confirm.click();confirm.click();
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(received.length,1);assert.equal(preflights,0);
+    assert.deepEqual(received[0].confirmedIdentity,{publisherId:identity.publisherId,appId:identity.appId});
+    assert.deepEqual(received[0].rows.map(row=>[row.name,row.floor]),[['A','60'],['B','40']]);
     assert.equal(received[0].rows[0].floor, '60');
     received[0].rows[0].name = 'mutated'; assert.equal(ui.handle.getConfig().rows[0].name, 'A', '回调配置与面板清单隔离');
   } finally { ui.dispose(); }
@@ -346,6 +523,6 @@ test('恢复草稿后重新填充编辑器并允许重新预检', () => {
     assert.equal(ui.handle.getConfig().format, 'app-open');
     assert.equal(ui.handle.getConfig().execution, 'single');
     assert.equal(ui.handle.getConfig().concurrency, 1);
-    ui.confirm(); assert.equal(ui.button('开始创建').disabled, false);
+    assert.equal(ui.button('开始创建').disabled, false);
   } finally { ui.dispose(); }
 });

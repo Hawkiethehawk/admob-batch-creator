@@ -5,7 +5,7 @@ declare global {
   function GM_listValues():string[];
   function GM_addValueChangeListener(key:string, fn:(key:string,old:unknown,value:unknown,remote:boolean)=>void):number;
   function GM_removeValueChangeListener(id:number):void;
-  function GM_openInTab(url:string, options?:{active?:boolean;insert?:boolean;setParent?:boolean}):{close():void;closed:boolean};
+  function GM_openInTab(url:string, options?:{active?:boolean;insert?:boolean;setParent?:boolean}):{close():void;focus?():void;closed:boolean};
   function GM_setClipboard(text:string, type?:string):void;
   function GM_getTab(callback:(tab:Record<string,unknown>)=>void):void;
   function GM_saveTab(tab:Record<string,unknown>, callback?:()=>void):void;
@@ -85,7 +85,14 @@ export async function waitFor<T>(read:()=>T|undefined, timeout=15000, watchKey?:
     const finish=()=>{settled=true;clearInterval(poll);clearTimeout(timer);remove();};
     const check=()=>{if(settled)return;try{const value=read();if(value!==undefined){finish();resolve(value);}}catch(e){finish();reject(e);}};
     const poll=setInterval(check,400);
-    const timer=setTimeout(()=>{if(settled)return;finish();reject(new Error('跨页通信等待超时；不会自动重派原任务'));},timeout);
+    const timer=setTimeout(()=>{
+      // After a suspended tab resumes, the deadline may run before a queued
+      // change notification even though the matching value is already durable.
+      check();
+      if(settled)return;
+      finish();
+      reject(new Error('跨页通信等待超时；不会自动重派原任务'));
+    },timeout);
     // Polling remains as a recovery path for delayed/missing GM notifications.
     if(watchKey){
       try{remove=listen(watchKey,check);}catch{/* A missing listener retains the polling fallback. */}

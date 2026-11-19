@@ -17,11 +17,17 @@ function deferred(){let resolve!:()=>void;return {promise:new Promise<void>(r=>{
 
 function environment(t:TestContext){
   const storage=new Map<string,unknown>();
+  const listeners=new Map<number,{key:string;callback:(key:string,previous:unknown,value:unknown,remote:boolean)=>void}>();
+  let listenerId=0;
   Object.assign(globalThis,{
     GM_getValue:<T>(key:string,fallback?:T):T=>clone((storage.has(key)?storage.get(key):fallback) as T),
-    GM_setValue:(key:string,value:unknown)=>{storage.set(key,clone(value));},
+    GM_setValue:(key:string,value:unknown)=>{
+      const previous=storage.get(key);storage.set(key,clone(value));
+      for(const listener of [...listeners.values()])if(listener.key===key)listener.callback(key,clone(previous),clone(value),true);
+    },
     GM_deleteValue:(key:string)=>{storage.delete(key);},
-    GM_addValueChangeListener:()=>0,GM_removeValueChangeListener:()=>{},
+    GM_addValueChangeListener:(key:string,callback:(key:string,previous:unknown,value:unknown,remote:boolean)=>void)=>{const id=++listenerId;listeners.set(id,{key,callback});return id;},
+    GM_removeValueChangeListener:(id:number)=>{listeners.delete(id);},
   });
   const held=new Set<string>();
   const queues=new Map<string,(()=>void)[]>();
@@ -130,9 +136,11 @@ test('a post-click clock write failure still collects and persists a delayed rec
   f.adapter.verify=async()=>({...identity,unitId,name:'A',format:'interstitial',mode:'manual',floor:'60',currency:'USD',verified:true});
   const running=performJob(entry.job,f.adapter,async data=>{await f.controller.handle(entry.slot,{...data,id:crypto.randomUUID(),at:Date.now(),workerId:entry.slot.id});},f.permission(entry.job));
   await waitingForId.promise;
-  assert.equal(clicks,1);assert.equal(entry.task.actual,undefined);assert.equal(entry.task.status,'verifying');
-  assert.equal((storage.get(prefix+'lastClick:'+identity.publisherId) as {pending:boolean}).pending,true);
-  receiptArrived.resolve();await running;
+  try{
+    assert.equal(clicks,1);assert.equal(entry.task.actual,undefined);
+    assert.equal(entry.task.status,'submitting','the exact receipt is collected before verifying telemetry');
+    assert.equal((storage.get(prefix+'lastClick:'+identity.publisherId) as {pending:boolean}).pending,true);
+  }finally{receiptArrived.resolve();await running;}
   assert.equal(entry.task.status,'success');
   const persisted=GM_getValue<Batch>(prefix+f.controller.key()).tasks[0];
   assert.equal(persisted.actual?.unitId,unitId);assert.equal(persisted.actual?.verified,true);
